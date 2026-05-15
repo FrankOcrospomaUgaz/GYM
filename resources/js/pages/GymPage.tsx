@@ -203,8 +203,21 @@ function formatCell(column: string, value: unknown) {
   if (column === "selected_days" && Array.isArray(value)) return value.join(", ");
   if (column === "day_schedules" && value && typeof value === "object") return Object.entries(value as Record<string, { start?: string; end?: string }>).map(([day, range]) => `${day}: ${range.start ?? "--:--"}-${range.end ?? "--:--"}`).join(", ");
   if (typeof value === "boolean" || value === 0 || value === 1) return Boolean(value) ? "Sí" : "No";
-  if (cellTranslations[column]?.[String(value)]) return cellTranslations[column][String(value)];
+  if (cellTranslations[column]?.[String(value)]) return column === "status" ? <StatusBadge value={String(value)} /> : cellTranslations[column][String(value)];
   return String(value ?? "-");
+}
+
+function StatusBadge({ value }: { value: string }) {
+  const label = cellTranslations.status[value] ?? value;
+  const classes = value === "active" || value === "paid" || value === "attended" || value === "operational"
+    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+    : value === "cancelled" || value === "blocked" || value === "damaged"
+      ? "bg-red-50 text-red-700 ring-red-200"
+      : value === "pending" || value === "maintenance" || value === "trial"
+        ? "bg-amber-50 text-amber-700 ring-amber-200"
+        : "bg-zinc-100 text-zinc-700 ring-zinc-200";
+
+  return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-black ring-1 ${classes}`}>{label}</span>;
 }
 
 function formatDateTime(value: unknown) {
@@ -857,6 +870,8 @@ function Module({ title, subtitle, children, onNew, newLabel }: { title: string;
 
 function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscription, onEdit, onDelete }: { subscriptions: AnyRow[]; viewMode: ClassViewMode; onViewModeChange: (mode: ClassViewMode) => void; onNewSubscription: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void }) {
   const weekdays = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+  const [statusFilter, setStatusFilter] = useState("active");
+  const filteredSubscriptions = statusFilter === "all" ? subscriptions : subscriptions.filter((item) => item.status === statusFilter);
   const activeSubscriptions = subscriptions.filter((item) => item.status === "active");
   const scheduleItems = subscriptionScheduleItems(activeSubscriptions);
   const monthDays = buildMonthDays(new Date());
@@ -903,7 +918,21 @@ function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscri
       {viewMode === "semana" ? <WeeklySchedule classes={scheduleItems} weekdays={weekdays} onEdit={(item) => onEdit(item.source ?? item)} /> : null}
 
 
-      {viewMode === "tabla" ? <DataTable title="Mensualidades de entrenamiento" rows={subscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "selected_days", "day_schedules", "payment_method", "status"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} /> : null}
+      {viewMode === "tabla" ? (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <div><h3 className="text-lg font-black">Filtro de mensualidades</h3><p className="text-sm font-semibold text-zinc-500">Por defecto se muestran solo las activas.</p></div>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className={fieldClass("min-w-48")}>
+              <option value="active">Activas</option>
+              <option value="inactive">Inactivas</option>
+              <option value="cancelled">Canceladas</option>
+              <option value="expired">Vencidas</option>
+              <option value="all">Todas</option>
+            </select>
+          </div>
+          <DataTable title="Mensualidades de entrenamiento" rows={filteredSubscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "selected_days", "day_schedules", "payment_method", "status"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -951,7 +980,7 @@ function WeeklySchedule({ classes, weekdays, onEdit }: { classes: AnyRow[]; week
                           <p className="truncate text-[11px] text-zinc-500">{gymClass.room ?? "Horario"} · {gymClass.trainer_name ?? "Mensual"}</p>
                         </div>
                         <div className="mt-auto flex flex-wrap gap-1 pt-2">
-                          <button onClick={() => onEdit(gymClass)} className="rounded-lg bg-[#ffcc00] px-2 py-1 text-[10px] font-black text-zinc-950">Editar</button>
+                          <IconButton title="Editar" onClick={() => onEdit(gymClass)} className="h-8 w-8 bg-[#ffcc00] text-zinc-950"><Edit3 className="h-3.5 w-3.5" /></IconButton>
                         </div>
                       </div>
                     </article>
@@ -967,7 +996,18 @@ function WeeklySchedule({ classes, weekdays, onEdit }: { classes: AnyRow[]; week
 }
 
 function ActionButtons({ onEdit, onDelete, extra }: { onEdit: () => void; onDelete: () => void; extra?: ReactNode }) {
-  return <div className="flex flex-wrap justify-end gap-2">{extra}<button onClick={onEdit} className="inline-flex items-center gap-1 rounded-xl bg-zinc-950 px-3 py-2 text-xs font-bold text-white"><Edit3 className="h-3.5 w-3.5" />Editar</button><button onClick={onDelete} className="inline-flex items-center gap-1 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700"><Trash2 className="h-3.5 w-3.5" />Eliminar</button></div>;
+  return <div className="flex flex-wrap justify-end gap-2">{extra}<IconButton title="Editar" onClick={onEdit} className="bg-zinc-950 text-white"><Edit3 className="h-4 w-4" /></IconButton><IconButton title="Eliminar" onClick={onDelete} className="bg-red-50 text-red-700 ring-1 ring-red-100"><Trash2 className="h-4 w-4" /></IconButton></div>;
+}
+
+function IconButton({ title, onClick, className, children }: { title: string; onClick: () => void; className: string; children: ReactNode }) {
+  return (
+    <span className="group relative inline-flex">
+      <button type="button" aria-label={title} title={title} onClick={onClick} className={`grid h-10 w-10 place-items-center rounded-xl text-xs font-bold transition hover:-translate-y-0.5 ${className}`}>
+        {children}
+      </button>
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg bg-zinc-950 px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">{title}</span>
+    </span>
+  );
 }
 
 function DataTable({ title, rows, columns, action }: { title: string; rows: AnyRow[]; columns: string[]; action?: (row: AnyRow) => ReactNode }) {
