@@ -144,6 +144,7 @@ class GymSeeder extends Seeder
                     'first_name' => $first,
                     'last_name' => $last,
                     'document_type' => 'DNI',
+                    'dni' => $doc,
                     'email' => $email,
                     'phone' => $phone,
                     'birthdate' => Carbon::now()->subYears(rand(22, 42))->subDays(rand(1, 300))->toDateString(),

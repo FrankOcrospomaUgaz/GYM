@@ -13,6 +13,7 @@ Route::middleware('guest')->group(function (): void {
 Route::middleware('auth')->group(function (): void {
     Route::post('/api/auth/logout', [AuthController::class, 'logout']);
     Route::get('/api/auth/me', [AuthController::class, 'me']);
+    Route::get('/api/reniec', [GymController::class, 'reniec'])->name('api.reniec');
 
     Route::prefix('api/gym')->group(function (): void {
         Route::get('dashboard', [GymController::class, 'dashboard']);

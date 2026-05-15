@@ -146,6 +146,7 @@ return new class extends Migration
                 $table->string('last_name');
                 $table->string('document_type')->default('DNI');
                 $table->string('document_number')->unique();
+                $table->string('dni', 8)->nullable()->unique();
                 $table->string('email')->nullable();
                 $table->string('phone');
                 $table->date('birthdate')->nullable();
@@ -186,6 +187,7 @@ return new class extends Migration
                 $table->string('receipt_number')->unique();
                 $table->decimal('amount', 12, 2);
                 $table->string('method')->default('cash');
+                $table->string('proof_path')->nullable();
                 $table->string('status')->default('paid');
                 $table->date('paid_on');
                 $table->text('notes')->nullable();
@@ -259,6 +261,7 @@ return new class extends Migration
                 $table->decimal('amount', 12, 2);
                 $table->date('spent_on');
                 $table->string('payment_method')->default('cash');
+                $table->string('proof_path')->nullable();
                 $table->text('description')->nullable();
                 $table->foreignId('registered_by')->nullable()->constrained('users')->nullOnDelete();
                 $table->timestamps();

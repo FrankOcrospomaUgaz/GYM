@@ -7,6 +7,8 @@ use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
 class GymController extends Controller
@@ -61,6 +63,7 @@ class GymController extends Controller
             $query->where(function ($q) use ($search): void {
                 $q->where('first_name', 'like', "%{$search}%")
                     ->orWhere('last_name', 'like', "%{$search}%")
+                    ->orWhere('dni', 'like', "%{$search}%")
                     ->orWhere('document_number', 'like', "%{$search}%")
                     ->orWhere('member_code', 'like', "%{$search}%");
             });
@@ -75,7 +78,8 @@ class GymController extends Controller
             'first_name' => ['required', 'string', 'max:80'],
             'last_name' => ['required', 'string', 'max:80'],
             'document_type' => ['required', 'string', 'max:20'],
-            'document_number' => ['required', 'string', 'max:30', Rule::unique('gym_members', 'document_number')],
+            'dni' => ['required', 'digits:8', Rule::unique('gym_members', 'dni')],
+            'document_number' => ['nullable', 'string', 'max:30', Rule::unique('gym_members', 'document_number')],
             'email' => ['nullable', 'email', 'max:120'],
             'phone' => ['required', 'string', 'max:30'],
             'birthdate' => ['nullable', 'date'],
@@ -88,6 +92,7 @@ class GymController extends Controller
             'branch_id' => ['nullable', 'exists:gym_branches,id'],
         ]);
 
+        $data['document_number'] = $data['document_number'] ?? $data['dni'];
         $nextId = ((int) DB::table('gym_members')->max('id')) + 1;
         $data['member_code'] = 'M-'.str_pad((string) $nextId, 4, '0', STR_PAD_LEFT);
         $data['status'] = 'active';
@@ -106,7 +111,8 @@ class GymController extends Controller
             'first_name' => ['required', 'string', 'max:80'],
             'last_name' => ['required', 'string', 'max:80'],
             'document_type' => ['required', 'string', 'max:20'],
-            'document_number' => ['required', 'string', 'max:30', Rule::unique('gym_members', 'document_number')->ignore($member)],
+            'dni' => ['required', 'digits:8', Rule::unique('gym_members', 'dni')->ignore($member)],
+            'document_number' => ['nullable', 'string', 'max:30', Rule::unique('gym_members', 'document_number')->ignore($member)],
             'email' => ['nullable', 'email', 'max:120'],
             'phone' => ['required', 'string', 'max:30'],
             'birthdate' => ['nullable', 'date'],
@@ -119,6 +125,7 @@ class GymController extends Controller
             'status' => ['required', Rule::in(['active', 'inactive', 'blocked'])],
             'branch_id' => ['nullable', 'exists:gym_branches,id'],
         ]);
+        $data['document_number'] = $data['document_number'] ?? $data['dni'];
         $data['updated_at'] = now();
 
         DB::table('gym_members')->where('id', $member)->update($data);
@@ -222,6 +229,109 @@ class GymController extends Controller
         return response()->json(DB::table('gym_branches')->where('is_active', true)->orderBy('name')->get());
     }
 
+    public function reniec(Request $request): JsonResponse
+    {
+        $dni = (string) $request->query('dni', '');
+
+        if (! preg_match('/^\d{8}$/', $dni)) {
+            return response()->json([
+                'status' => false,
+                'message' => 'DNI inválido.',
+            ], 422);
+        }
+
+        $response = Http::timeout(15)->get((string) config('apireniec.url'), [
+            'document' => $dni,
+            'key' => (string) config('apireniec.key'),
+        ]);
+
+        if (! $response->successful()) {
+            return response()->json([
+                'status' => false,
+                'message' => 'No se pudo consultar RENIEC.',
+            ], 422);
+        }
+
+        $data = (array) $response->json();
+        $estado = (bool) ($data['estado'] ?? $data['status'] ?? false);
+        $resultado = (array) ($data['resultado'] ?? []);
+        $mensaje = (string) ($data['mensaje'] ?? $data['message'] ?? '');
+
+        if ($estado && $resultado === []) {
+            $hasPersonFields = ($data['nombres'] ?? '') !== ''
+                || ($data['apellido_paterno'] ?? '') !== ''
+                || ($data['apellido_materno'] ?? '') !== ''
+                || ($data['nombre_completo'] ?? '') !== ''
+                || ($data['name'] ?? '') !== '';
+
+            if ($hasPersonFields) {
+                $resultado = $data;
+            }
+        }
+
+        if (! $estado || $resultado === []) {
+            return response()->json([
+                'status' => false,
+                'message' => $mensaje !== '' ? $mensaje : 'No se encontró información en RENIEC.',
+            ], 422);
+        }
+
+        $id = (string) ($resultado['id'] ?? $dni);
+        $nombres = trim((string) ($resultado['nombres'] ?? ''));
+        $apellidoPaterno = trim((string) ($resultado['apellido_paterno'] ?? ($resultado['apellidoPaterno'] ?? '')));
+        $apellidoMaterno = trim((string) ($resultado['apellido_materno'] ?? ($resultado['apellidoMaterno'] ?? '')));
+        $codigoVerificacion = trim((string) ($resultado['codigo_verificacion'] ?? ($resultado['codigoVerificacion'] ?? '')));
+        $fechaNacimiento = $this->normalizeReniecDate((string) ($resultado['fecha_nacimiento'] ?? ($resultado['fechaNacimiento'] ?? '')));
+        $genero = $this->normalizeReniecGender((string) ($resultado['genero'] ?? ($resultado['sexo'] ?? '')));
+
+        if ($nombres === '' && $apellidoPaterno === '' && $apellidoMaterno === '') {
+            $full = trim((string) ($resultado['nombre_completo'] ?? ($resultado['name'] ?? '')));
+            if ($full !== '') {
+                $parts = preg_split('/\s+/', $full) ?: [];
+                if (count($parts) >= 4) {
+                    $nombres = trim(implode(' ', array_slice($parts, 0, count($parts) - 2)));
+                    $apellidoPaterno = (string) ($parts[count($parts) - 2] ?? '');
+                    $apellidoMaterno = (string) ($parts[count($parts) - 1] ?? '');
+                } elseif (count($parts) === 3) {
+                    $nombres = (string) ($parts[0] ?? '');
+                    $apellidoPaterno = (string) ($parts[1] ?? '');
+                    $apellidoMaterno = (string) ($parts[2] ?? '');
+                } elseif (count($parts) === 2) {
+                    $nombres = (string) ($parts[0] ?? '');
+                    $apellidoPaterno = (string) ($parts[1] ?? '');
+                } elseif (count($parts) === 1) {
+                    $nombres = (string) ($parts[0] ?? '');
+                }
+            }
+        }
+
+        $nombreCompleto = trim(implode(' ', array_filter([$nombres, $apellidoPaterno, $apellidoMaterno])));
+        if ($nombreCompleto === '') {
+            return response()->json([
+                'status' => false,
+                'message' => 'No se encontró información en RENIEC.',
+            ], 422);
+        }
+
+        $apellidosUnificados = trim(implode(' ', array_filter([$apellidoPaterno, $apellidoMaterno])));
+
+        return response()->json([
+            'status' => true,
+            'message' => $mensaje !== '' ? $mensaje : 'Encontrado',
+            'id' => $id,
+            'nombres' => $nombres,
+            'apellido_paterno' => $apellidoPaterno,
+            'apellido_materno' => $apellidoMaterno,
+            'nombre_completo' => (string) ($resultado['nombre_completo'] ?? $nombreCompleto),
+            'codigo_verificacion' => $codigoVerificacion,
+            'fecha_nacimiento' => $fechaNacimiento,
+            'genero' => $genero,
+            'first_name' => $nombres,
+            'last_name' => $apellidosUnificados,
+            'name' => $nombreCompleto,
+        ]);
+    }
+
     public function sellMembership(Request $request): JsonResponse
     {
         $data = $request->validate([
@@ -230,6 +340,7 @@ class GymController extends Controller
             'starts_on' => ['required', 'date'],
             'discount' => ['nullable', 'numeric', 'min:0'],
             'method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+            'proof_photo' => ['nullable', 'image', 'max:4096'],
             'notes' => ['nullable', 'string'],
         ]);
 
@@ -238,7 +349,11 @@ class GymController extends Controller
         $discount = (float) ($data['discount'] ?? 0);
         $amount = max(0, (float) $plan->price - $discount);
 
-        return DB::transaction(function () use ($request, $data, $plan, $starts, $discount, $amount): JsonResponse {
+        $proofPath = $data['method'] !== 'cash' && $request->hasFile('proof_photo')
+            ? $request->file('proof_photo')?->store('payment-proofs', 'public')
+            : null;
+
+        return DB::transaction(function () use ($request, $data, $plan, $starts, $discount, $amount, $proofPath): JsonResponse {
             DB::table('gym_memberships')->where('member_id', $data['member_id'])->where('status', 'active')->update(['status' => 'replaced', 'updated_at' => now()]);
             $membershipId = DB::table('gym_memberships')->insertGetId([
                 'member_id' => $data['member_id'],
@@ -259,6 +374,7 @@ class GymController extends Controller
                 'receipt_number' => 'B001-'.str_pad((string) (((int) DB::table('gym_payments')->max('id')) + 1), 5, '0', STR_PAD_LEFT),
                 'amount' => $amount,
                 'method' => $data['method'],
+                'proof_path' => $proofPath,
                 'status' => 'paid',
                 'paid_on' => now()->toDateString(),
                 'notes' => 'Venta de membresía',
@@ -289,7 +405,12 @@ class GymController extends Controller
             ->select('gym_payments.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"))
             ->orderByDesc('gym_payments.id')
             ->limit(100)
-            ->get());
+            ->get()
+            ->map(function ($payment) {
+                $payment->proof_url = $payment->proof_path ? Storage::disk('public')->url($payment->proof_path) : null;
+
+                return $payment;
+            }));
     }
 
     public function checkIn(Request $request): JsonResponse
@@ -354,20 +475,56 @@ class GymController extends Controller
                 'supplier' => ['nullable', 'string', 'max:120'],
                 'amount' => ['required', 'numeric', 'min:0.01'],
                 'spent_on' => ['required', 'date'],
-                'payment_method' => ['required', 'string', 'max:40'],
+                'payment_method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+                'proof_photo' => ['nullable', 'image', 'max:4096'],
                 'description' => ['nullable', 'string'],
             ]);
+            $data['proof_path'] = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
+                ? $request->file('proof_photo')?->store('expense-proofs', 'public')
+                : null;
             $data['registered_by'] = $request->user()?->id;
             $data['created_at'] = now();
             $data['updated_at'] = now();
             DB::table('gym_expenses')->insert($data);
         }
 
-        return response()->json(DB::table('gym_expenses')->orderByDesc('spent_on')->limit(80)->get());
+        return response()->json(DB::table('gym_expenses')->orderByDesc('spent_on')->limit(80)->get()->map(function ($expense) {
+            $expense->proof_url = $expense->proof_path ? Storage::disk('public')->url($expense->proof_path) : null;
+
+            return $expense;
+        }));
     }
 
     public function notifications(): JsonResponse
     {
         return response()->json(DB::table('gym_notifications')->orderByRaw('read_at is not null')->latest()->limit(50)->get());
+    }
+
+    private function normalizeReniecDate(string $value): string
+    {
+        $raw = trim($value);
+
+        if ($raw === '') {
+            return '';
+        }
+
+        if (preg_match('/^(\d{2})\/(\d{2})\/(\d{4})$/', $raw, $matches)) {
+            return sprintf('%s-%s-%s', $matches[3], $matches[2], $matches[1]);
+        }
+
+        if (preg_match('/^(\d{4}-\d{2}-\d{2})/', $raw, $matches)) {
+            return $matches[1];
+        }
+
+        return '';
+    }
+
+    private function normalizeReniecGender(string $value): string
+    {
+        return match (strtoupper(trim($value))) {
+            'M', 'MASCULINO', 'HOMBRE', 'MALE' => 'MASCULINO',
+            'F', 'FEMENINO', 'MUJER', 'FEMALE' => 'FEMENINO',
+            default => '',
+        };
     }
 }

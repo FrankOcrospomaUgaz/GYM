@@ -22,6 +22,7 @@ const emptyMember = {
   first_name: "",
   last_name: "",
   document_type: "DNI",
+  dni: "",
   document_number: "",
   email: "",
   phone: "",
@@ -51,6 +52,7 @@ const emptyPlan = {
 
 const labels: Record<string, string> = {
   member_code: "Código",
+  dni: "DNI",
   first_name: "Nombres",
   last_name: "Apellidos",
   document_number: "Documento",
@@ -75,6 +77,7 @@ const labels: Record<string, string> = {
   amount: "Monto",
   method: "Medio",
   paid_on: "Fecha",
+  proof_url: "Foto",
   checked_in_at: "Entrada",
   checked_out_at: "Salida",
   result: "Resultado",
@@ -101,6 +104,7 @@ function fieldClass(extra = "") {
 }
 
 function formatCell(column: string, value: unknown) {
+  if (column === "proof_url") return value ? <a className="font-bold text-blue-700 underline" href={String(value)} target="_blank" rel="noreferrer">Ver foto</a> : "-";
   if (column.includes("amount") || column === "price" || column === "discount") return money(value);
   if (column === "duration_days") return `${value ?? 0} días`;
   if (column === "grace_days") return `${value ?? 0} días`;
@@ -125,8 +129,8 @@ export function GymPage() {
   const [notifications, setNotifications] = useState<AnyRow[]>([]);
   const [memberForm, setMemberForm] = useState<AnyRow>(emptyMember);
   const [planForm, setPlanForm] = useState<AnyRow>(emptyPlan);
-  const [saleForm, setSaleForm] = useState({ member_id: "", plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", notes: "" });
-  const [expenseForm, setExpenseForm] = useState({ category: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", description: "" });
+  const [saleForm, setSaleForm] = useState<AnyRow>({ member_id: "", plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", proof_photo: null, notes: "" });
+  const [expenseForm, setExpenseForm] = useState<AnyRow>({ category: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", proof_photo: null, description: "" });
   const [editingMemberId, setEditingMemberId] = useState<number | null>(null);
   const [editingPlanId, setEditingPlanId] = useState<number | null>(null);
   const [memberModalOpen, setMemberModalOpen] = useState(false);
@@ -189,7 +193,7 @@ export function GymPage() {
   async function saveMember(event: FormEvent) {
     event.preventDefault();
     setMessage("");
-    const payload = { ...memberForm, branch_id: memberForm.branch_id || null };
+    const payload = { ...memberForm, document_number: memberForm.dni, branch_id: memberForm.branch_id || null };
     if (editingMemberId) {
       await httpClient.put(`/api/gym/members/${editingMemberId}`, payload);
       setMessage("Socio actualizado correctamente.");
@@ -199,6 +203,27 @@ export function GymPage() {
     }
     setMemberModalOpen(false);
     await loadAll();
+  }
+
+  async function lookupDni(dni: string) {
+    const cleanDni = String(dni || "").trim();
+    if (!/^\d{8}$/.test(cleanDni)) {
+      setMessage("Ingrese un DNI válido de 8 dígitos.");
+      return;
+    }
+
+    const response = await httpClient.get("/api/reniec", { params: { dni: cleanDni } });
+    const payload = response.data;
+    setMemberForm((current: AnyRow) => ({
+      ...current,
+      dni: cleanDni,
+      document_number: cleanDni,
+      first_name: String(payload?.first_name ?? payload?.nombres ?? "").trim(),
+      last_name: String(payload?.last_name ?? "").trim() || [payload?.apellido_paterno, payload?.apellido_materno].filter(Boolean).join(" "),
+      birthdate: payload?.fecha_nacimiento || current.birthdate || "",
+      gender: payload?.genero || current.gender || "",
+    }));
+    setMessage("Datos RENIEC cargados correctamente.");
   }
 
   function confirmDeleteMember(member: AnyRow) {
@@ -276,7 +301,11 @@ export function GymPage() {
   async function sellMembership(event: FormEvent) {
     event.preventDefault();
     setMessage("");
-    await httpClient.post("/api/gym/memberships", saleForm);
+    const formData = new FormData();
+    Object.entries(saleForm).forEach(([key, value]) => {
+      if (value !== null && value !== undefined && value !== "") formData.append(key, value as string | Blob);
+    });
+    await httpClient.post("/api/gym/memberships", formData);
     setSaleModalOpen(false);
     setMessage("Membresía vendida y pago registrado.");
     await loadAll();
@@ -291,8 +320,12 @@ export function GymPage() {
 
   async function saveExpense(event: FormEvent) {
     event.preventDefault();
-    await httpClient.post("/api/gym/expenses", expenseForm);
-    setExpenseForm({ category: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", description: "" });
+    const formData = new FormData();
+    Object.entries(expenseForm).forEach(([key, value]) => {
+      if (value !== null && value !== undefined && value !== "") formData.append(key, value as string | Blob);
+    });
+    await httpClient.post("/api/gym/expenses", formData);
+    setExpenseForm({ category: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", proof_photo: null, description: "" });
     setExpenseModalOpen(false);
     setMessage("Gasto registrado.");
     await loadAll();
@@ -342,18 +375,18 @@ export function GymPage() {
 
         <section className="space-y-5 p-3 sm:p-4 lg:space-y-6 lg:p-8">
           {tab === "dashboard" ? <Dashboard dashboard={dashboard} activeMembers={activeMembers.length} memberships={memberships.length} notifications={notifications} /> : null}
-          {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio"><DataTable title="Socios registrados" rows={members} columns={["member_code", "first_name", "last_name", "document_number", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<button onClick={() => void checkIn(row.id)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Ingreso</button>} />} /></Module> : null}
+          {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio"><DataTable title="Socios registrados" rows={members} columns={["member_code", "dni", "first_name", "last_name", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<button onClick={() => void checkIn(row.id)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Ingreso</button>} />} /></Module> : null}
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
           {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "result", "notes"]} /></Module> : null}
           {tab === "classes" ? <Module title="Clases" subtitle="Horarios disponibles, cupos y entrenadores asignados."><DataTable title="Clases y horarios" rows={classes} columns={["name", "category", "weekday", "starts_at", "ends_at", "capacity", "trainer_name"]} /></Module> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos."><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} /></Module> : null}
-          {tab === "finance" ? <Module title="Caja" subtitle="Pagos recibidos y gastos operativos." onNew={() => setExpenseModalOpen(true)} newLabel="Registrar gasto"><DataTable title="Pagos recibidos" rows={payments} columns={["receipt_number", "member_name", "amount", "method", "paid_on", "status"]} /></Module> : null}
+          {tab === "finance" ? <Module title="Caja" subtitle="Pagos recibidos y gastos operativos." onNew={() => setExpenseModalOpen(true)} newLabel="Registrar gasto"><DataTable title="Pagos recibidos" rows={payments} columns={["receipt_number", "member_name", "amount", "method", "paid_on", "proof_url", "status"]} /></Module> : null}
         </section>
       </main>
 
       <BottomNav tab={tab} onSelect={selectTab} />
-      <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} onChange={setMemberForm} onClose={() => setMemberModalOpen(false)} onSubmit={saveMember} />
+      <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => setMemberModalOpen(false)} onSubmit={saveMember} />
       <PlanModal open={planModalOpen} editing={Boolean(editingPlanId)} form={planForm} onChange={setPlanForm} onClose={() => setPlanModalOpen(false)} onSubmit={savePlan} />
       <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} onChange={setSaleForm} onClose={() => setSaleModalOpen(false)} onSubmit={sellMembership} />
       <ExpenseModal open={expenseModalOpen} form={expenseForm} onChange={setExpenseForm} onClose={() => setExpenseModalOpen(false)} onSubmit={saveExpense} />
@@ -417,8 +450,32 @@ function Modal({ open, title, subtitle, children, onClose }: { open: boolean; ti
   return <div className="fixed inset-0 z-50 grid place-items-end bg-zinc-950/60 p-0 backdrop-blur-sm sm:place-items-center sm:p-4"><div className="max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-3xl"><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black">{title}</h2>{subtitle ? <p className="mt-1 text-sm text-zinc-500">{subtitle}</p> : null}</div><button onClick={onClose} className="rounded-2xl bg-zinc-100 p-2 text-zinc-600"><X className="h-5 w-5" /></button></div>{children}</div></div>;
 }
 
-function MemberModal({ open, editing, form, branches, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-  return <Modal open={open} title={editing ? "Editar socio" : "Nuevo socio"} subtitle="Datos personales, contacto de emergencia y objetivo físico." onClose={onClose}><form onSubmit={onSubmit} className="space-y-4"><div className="grid gap-3 sm:grid-cols-2">{["first_name:Nombres", "last_name:Apellidos", "document_number:Documento", "phone:Teléfono", "email:Correo", "birthdate:Fecha de nacimiento", "emergency_contact_name:Contacto de emergencia", "emergency_contact_phone:Teléfono emergencia"].map((item) => { const [field, label] = item.split(":"); return <label key={field} className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">{label}<input required={["first_name", "last_name", "document_number", "phone"].includes(field)} type={field === "birthdate" ? "date" : "text"} value={form[field] ?? ""} onChange={(event) => onChange({ ...form, [field]: event.target.value })} className={fieldClass()} /></label>; })}<label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Sede<select value={form.branch_id ?? ""} onChange={(event) => onChange({ ...form, branch_id: event.target.value })} className={fieldClass()}><option value="">Seleccione</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>{editing ? <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado<select value={form.status ?? "active"} onChange={(event) => onChange({ ...form, status: event.target.value })} className={fieldClass()}><option value="active">Activo</option><option value="inactive">Inactivo</option><option value="blocked">Bloqueado</option></select></label> : null}</div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Objetivo físico<input value={form.fitness_goal ?? ""} onChange={(event) => onChange({ ...form, fitness_goal: event.target.value })} className={fieldClass()} /></label><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Observaciones médicas<textarea value={form.medical_notes ?? ""} onChange={(event) => onChange({ ...form, medical_notes: event.target.value })} className={fieldClass("min-h-24")} /></label><FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Crear socio"} /></form></Modal>;
+function MemberModal({ open, editing, form, branches, onChange, onSearchDni, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; onChange: (form: AnyRow) => void; onSearchDni: (dni: string) => Promise<void>; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return (
+    <Modal open={open} title={editing ? "Editar socio" : "Nuevo socio"} subtitle="Datos personales, búsqueda RENIEC y contacto de emergencia." onClose={onClose}>
+      <form onSubmit={onSubmit} className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+            <RequiredLabel>DNI</RequiredLabel>
+            <div className="flex gap-2">
+              <input required maxLength={8} value={form.dni ?? ""} onChange={(event) => onChange({ ...form, dni: event.target.value.replace(/\D/g, "").slice(0, 8), document_number: event.target.value.replace(/\D/g, "").slice(0, 8) })} className={fieldClass("min-w-0 flex-1")} />
+              <button type="button" onClick={() => void onSearchDni(form.dni)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Buscar</button>
+            </div>
+          </label>
+          {["first_name:Nombres", "last_name:Apellidos", "phone:Teléfono", "email:Correo", "birthdate:Fecha de nacimiento", "emergency_contact_name:Contacto de emergencia", "emergency_contact_phone:Teléfono emergencia"].map((item) => {
+            const [field, label] = item.split(":");
+            const required = ["first_name", "last_name", "phone"].includes(field);
+            return <label key={field} className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel required={required}>{label}</RequiredLabel><input required={required} type={field === "birthdate" ? "date" : "text"} value={form[field] ?? ""} onChange={(event) => onChange({ ...form, [field]: event.target.value })} className={fieldClass()} /></label>;
+          })}
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Sede<select value={form.branch_id ?? ""} onChange={(event) => onChange({ ...form, branch_id: event.target.value })} className={fieldClass()}><option value="">Seleccione</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+          {editing ? <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Estado</RequiredLabel><select required value={form.status ?? "active"} onChange={(event) => onChange({ ...form, status: event.target.value })} className={fieldClass()}><option value="active">Activo</option><option value="inactive">Inactivo</option><option value="blocked">Bloqueado</option></select></label> : null}
+        </div>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Objetivo físico<input value={form.fitness_goal ?? ""} onChange={(event) => onChange({ ...form, fitness_goal: event.target.value })} className={fieldClass()} /></label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Observaciones médicas<textarea value={form.medical_notes ?? ""} onChange={(event) => onChange({ ...form, medical_notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
+        <FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Crear socio"} />
+      </form>
+    </Modal>
+  );
 }
 
 function PlanModal({ open, editing, form, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
@@ -426,15 +483,43 @@ function PlanModal({ open, editing, form, onChange, onClose, onSubmit }: { open:
 }
 
 function SaleModal({ open, form, members, plans, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; plans: AnyRow[]; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-  return <Modal open={open} title="Nueva venta" subtitle="Activa una membresía y registra el pago." onClose={onClose}><form onSubmit={onSubmit} className="space-y-3"><select required value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione socio</option>{members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}</select><select required value={form.plan_id} onChange={(event) => onChange({ ...form, plan_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione plan</option>{plans.filter((plan) => plan.is_active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {money(plan.price)}</option>)}</select><div className="grid gap-3 sm:grid-cols-2"><input type="date" value={form.starts_on} onChange={(event) => onChange({ ...form, starts_on: event.target.value })} className={fieldClass()} /><input value={form.discount} onChange={(event) => onChange({ ...form, discount: event.target.value })} placeholder="Descuento" className={fieldClass()} /></div><select value={form.method} onChange={(event) => onChange({ ...form, method: event.target.value })} className={fieldClass("w-full")}><option value="cash">Efectivo</option><option value="card">Tarjeta</option><option value="transfer">Transferencia</option><option value="yape">Yape</option><option value="plin">Plin</option></select><FormActions onClose={onClose} submitLabel="Cobrar y activar" /></form></Modal>;
+  return <Modal open={open} title="Nueva venta" subtitle="Activa una membresía y registra el pago." onClose={onClose}><form onSubmit={onSubmit} className="space-y-3"><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><select required value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione socio</option>{members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}</select></label><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Plan</RequiredLabel><select required value={form.plan_id} onChange={(event) => onChange({ ...form, plan_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione plan</option>{plans.filter((plan) => plan.is_active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {money(plan.price)}</option>)}</select></label><div className="grid gap-3 sm:grid-cols-2"><Field label="Fecha de inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required /><Field label="Descuento" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} /></div><PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} /><FormActions onClose={onClose} submitLabel="Cobrar y activar" /></form></Modal>;
 }
 
 function ExpenseModal({ open, form, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-  return <Modal open={open} title="Registrar gasto" subtitle="Controla egresos operativos del gimnasio." onClose={onClose}><form onSubmit={onSubmit} className="grid gap-3"><Field label="Categoría" value={form.category} onChange={(value) => onChange({ ...form, category: value })} required /><Field label="Proveedor" value={form.supplier} onChange={(value) => onChange({ ...form, supplier: value })} /><Field label="Monto" type="number" value={form.amount} onChange={(value) => onChange({ ...form, amount: value })} required /><Field label="Fecha" type="date" value={form.spent_on} onChange={(value) => onChange({ ...form, spent_on: value })} required /><Field label="Medio de pago" value={form.payment_method} onChange={(value) => onChange({ ...form, payment_method: value })} required /><Field label="Descripción" value={form.description} onChange={(value) => onChange({ ...form, description: value })} /><FormActions onClose={onClose} submitLabel="Guardar gasto" /></form></Modal>;
+  return <Modal open={open} title="Registrar gasto" subtitle="Controla egresos operativos del gimnasio." onClose={onClose}><form onSubmit={onSubmit} className="grid gap-3"><Field label="Categoría" value={form.category} onChange={(value) => onChange({ ...form, category: value })} required /><Field label="Proveedor" value={form.supplier} onChange={(value) => onChange({ ...form, supplier: value })} /><Field label="Monto" type="number" value={form.amount} onChange={(value) => onChange({ ...form, amount: value })} required /><Field label="Fecha" type="date" value={form.spent_on} onChange={(value) => onChange({ ...form, spent_on: value })} required /><PaymentFields method={form.payment_method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, payment_method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} /><Field label="Descripción" value={form.description} onChange={(value) => onChange({ ...form, description: value })} /><FormActions onClose={onClose} submitLabel="Guardar gasto" /></form></Modal>;
 }
 
 function Field({ label, value, onChange, type = "text", required }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean }) {
-  return <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">{label}<input type={type} required={required} value={value ?? ""} onChange={(event) => onChange(event.target.value)} className={fieldClass()} /></label>;
+  return <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel required={Boolean(required)}>{label}</RequiredLabel><input type={type} required={required} value={value ?? ""} onChange={(event) => onChange(event.target.value)} className={fieldClass()} /></label>;
+}
+
+function RequiredLabel({ children, required = true }: { children: ReactNode; required?: boolean }) {
+  return <span>{children}{required ? <span className="ml-1 text-red-600">*</span> : null}</span>;
+}
+
+function PaymentFields({ method, file, onMethodChange, onFileChange }: { method: string; file: File | null; onMethodChange: (value: string) => void; onFileChange: (file: File | null) => void }) {
+  return (
+    <div className="grid gap-3">
+      <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+        <RequiredLabel>Medio de pago</RequiredLabel>
+        <select required value={method || "cash"} onChange={(event) => onMethodChange(event.target.value)} className={fieldClass("w-full")}>
+          <option value="cash">Efectivo</option>
+          <option value="card">Tarjeta</option>
+          <option value="transfer">Transferencia</option>
+          <option value="yape">Yape</option>
+          <option value="plin">Plin</option>
+        </select>
+      </label>
+      {method !== "cash" ? (
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          Foto del comprobante
+          <input type="file" accept="image/*" onChange={(event) => onFileChange(event.target.files?.[0] ?? null)} className={fieldClass("w-full file:mr-3 file:rounded-xl file:border-0 file:bg-zinc-950 file:px-3 file:py-2 file:text-xs file:font-black file:text-white")} />
+          {file ? <span className="text-xs font-semibold normal-case tracking-normal text-zinc-500">{file.name}</span> : null}
+        </label>
+      ) : null}
+    </div>
+  );
 }
 
 function FormActions({ onClose, submitLabel }: { onClose: () => void; submitLabel: string }) {
