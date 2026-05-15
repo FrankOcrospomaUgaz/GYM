@@ -633,6 +633,7 @@ class GymController extends Controller
             ->get()
             ->map(function ($subscription) {
                 $subscription->selected_days = json_decode((string) $subscription->selected_days, true) ?: [];
+                $subscription->day_schedules = json_decode((string) ($subscription->day_schedules ?? ''), true) ?: [];
                 $subscription->proof_url = $subscription->proof_path ? Storage::disk('public')->url($subscription->proof_path) : null;
 
                 return $subscription;
@@ -648,14 +649,29 @@ class GymController extends Controller
             'starts_on' => ['required', 'date'],
             'selected_days' => ['required', 'array', 'min:1'],
             'selected_days.*' => ['required', Rule::in(['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'])],
-            'preferred_time' => ['required', 'date_format:H:i'],
             'sessions_per_week' => ['required', 'integer', 'min:1', 'max:7'],
+            'day_schedules' => ['required', 'json'],
             'payment_method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
             'proof_photo' => ['nullable', 'image', 'max:4096'],
             'notes' => ['nullable', 'string'],
         ]);
 
         $starts = Carbon::parse($data['starts_on']);
+        $selectedDays = array_values($data['selected_days']);
+        if (count($selectedDays) !== (int) $data['sessions_per_week']) {
+            return response()->json(['message' => 'La cantidad de días seleccionados debe coincidir con las sesiones por semana.'], 422);
+        }
+
+        $daySchedules = (array) json_decode((string) $data['day_schedules'], true);
+        foreach ($selectedDays as $day) {
+            $range = (array) ($daySchedules[$day] ?? []);
+            $start = (string) ($range['start'] ?? '');
+            $end = (string) ($range['end'] ?? '');
+            if (! preg_match('/^\d{2}:\d{2}$/', $start) || ! preg_match('/^\d{2}:\d{2}$/', $end) || $end <= $start) {
+                return response()->json(['message' => "Configure un rango horario válido para {$day}."], 422);
+            }
+        }
+        $preferredTime = (string) (($daySchedules[$selectedDays[0]]['start'] ?? '07:00'));
         abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
         $proofPath = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
             ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public')
@@ -668,8 +684,9 @@ class GymController extends Controller
             'monthly_fee' => $data['monthly_fee'],
             'starts_on' => $starts->toDateString(),
             'ends_on' => $starts->copy()->addMonthNoOverflow()->subDay()->toDateString(),
-            'selected_days' => json_encode(array_values($data['selected_days'])),
-            'preferred_time' => $data['preferred_time'],
+            'selected_days' => json_encode($selectedDays),
+            'day_schedules' => json_encode(collect($daySchedules)->only($selectedDays)->all()),
+            'preferred_time' => $preferredTime,
             'sessions_per_week' => $data['sessions_per_week'],
             'payment_method' => $data['payment_method'],
             'proof_path' => $proofPath,
