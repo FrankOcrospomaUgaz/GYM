@@ -7,6 +7,7 @@ type AnyRow = Record<string, any>;
 type Tab = "dashboard" | "members" | "plans" | "memberships" | "attendance" | "classes" | "finance" | "equipment" | "system";
 type ConfirmState = { title: string; body: string; onConfirm: () => Promise<void> } | null;
 type MemberModalContext = "general" | "training";
+type ClassViewMode = "mes" | "semana" | "tabla" | "mensualidades";
 
 const classDisciplines = ["MMA", "Sparring", "Box", "Brazilian Jiu-Jitsu", "Muay Thai", "Funcional", "Cardio", "Fuerza", "Yoga"];
 
@@ -301,6 +302,7 @@ export function GymPage() {
   const [expenseForm, setExpenseForm] = useState<AnyRow>({ category: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", proof_photo: null, description: "" });
   const [classForm, setClassForm] = useState<AnyRow>(emptyClassForm);
   const [classModalOpen, setClassModalOpen] = useState(false);
+  const [classesViewMode, setClassesViewMode] = useState<ClassViewMode>("mes");
   const [classDetailOpen, setClassDetailOpen] = useState(false);
   const [selectedClass, setSelectedClass] = useState<AnyRow | null>(null);
   const [classBookings, setClassBookings] = useState<AnyRow[]>([]);
@@ -674,6 +676,7 @@ export function GymPage() {
     });
     await httpClient.post("/api/gym/training-subscriptions", formData);
     setTrainingSubscriptionModalOpen(false);
+    setClassesViewMode("mensualidades");
     setMessage("Mensualidad de clases registrada correctamente.");
     await loadAll();
   }
@@ -726,7 +729,7 @@ export function GymPage() {
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
           {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} /></Module> : null}
-          {tab === "classes" ? <ClassesModule classes={classes} subscriptions={trainingSubscriptions} onNew={openNewClass} onNewSubscription={openTrainingSubscription} onEdit={openEditClass} onDelete={confirmDeleteClass} onOpenDetail={(gymClass) => void openClassDetail(gymClass)} /> : null}
+          {tab === "classes" ? <ClassesModule classes={classes} subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNew={openNewClass} onNewSubscription={openTrainingSubscription} onEdit={openEditClass} onDelete={confirmDeleteClass} onOpenDetail={(gymClass) => void openClassDetail(gymClass)} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos."><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} /></Module> : null}
           {tab === "finance" ? <Module title="Caja" subtitle="Pagos recibidos y gastos operativos." onNew={() => setExpenseModalOpen(true)} newLabel="Registrar gasto"><DataTable title="Pagos recibidos" rows={payments} columns={["receipt_number", "member_name", "amount", "method", "paid_on", "proof_url", "status"]} /></Module> : null}
           {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} /> : null}
@@ -775,10 +778,9 @@ function Module({ title, subtitle, children, onNew, newLabel }: { title: string;
   );
 }
 
-function ClassesModule({ classes, subscriptions, onNew, onNewSubscription, onEdit, onDelete, onOpenDetail }: { classes: AnyRow[]; subscriptions: AnyRow[]; onNew: () => void; onNewSubscription: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void; onOpenDetail: (row: AnyRow) => void }) {
+function ClassesModule({ classes, subscriptions, viewMode, onViewModeChange, onNew, onNewSubscription, onEdit, onDelete, onOpenDetail }: { classes: AnyRow[]; subscriptions: AnyRow[]; viewMode: ClassViewMode; onViewModeChange: (mode: ClassViewMode) => void; onNew: () => void; onNewSubscription: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void; onOpenDetail: (row: AnyRow) => void }) {
   const weekdays = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
   const activeClasses = classes.filter((item) => item.is_active);
-  const [viewMode, setViewMode] = useState<"mes" | "semana" | "tabla" | "mensualidades">("mes");
   const monthDays = buildMonthDays(new Date());
 
   return (
@@ -796,7 +798,7 @@ function ClassesModule({ classes, subscriptions, onNew, onNewSubscription, onEdi
           </div>
         </div>
         <div className="flex flex-wrap gap-2 border-t border-white/10 px-5 py-4">
-          {(["mes", "semana", "tabla", "mensualidades"] as const).map((mode) => <button key={mode} onClick={() => setViewMode(mode)} className={`rounded-2xl px-4 py-2 text-sm font-black ${viewMode === mode ? "bg-[#ffcc00] text-zinc-950" : "bg-white/10 text-zinc-300"}`}>{mode === "mes" ? "Calendario mensual" : mode === "semana" ? "Semana" : mode === "tabla" ? "Tabla" : "Mensualidades"}</button>)}
+          {(["mes", "semana", "tabla", "mensualidades"] as const).map((mode) => <button key={mode} onClick={() => onViewModeChange(mode)} className={`rounded-2xl px-4 py-2 text-sm font-black ${viewMode === mode ? "bg-[#ffcc00] text-zinc-950" : "bg-white/10 text-zinc-300"}`}>{mode === "mes" ? "Calendario mensual" : mode === "semana" ? "Semana" : mode === "tabla" ? "Tabla" : "Mensualidades"}</button>)}
         </div>
         <div className="grid grid-cols-2 gap-3 border-t border-white/10 p-5 sm:grid-cols-4">
           <MetricCard title="Clases activas" value={activeClasses.length} yellow />
