@@ -216,12 +216,16 @@ return new class extends Migration
                 $table->id();
                 $table->string('name');
                 $table->string('category');
+                $table->string('level')->default('Todos');
                 $table->foreignId('branch_id')->nullable()->constrained('gym_branches')->nullOnDelete();
+                $table->string('room')->nullable();
                 $table->foreignId('trainer_id')->nullable()->constrained('users')->nullOnDelete();
                 $table->string('weekday');
                 $table->time('starts_at');
                 $table->time('ends_at');
                 $table->unsignedSmallInteger('capacity');
+                $table->string('color', 20)->default('#ffcc00');
+                $table->text('description')->nullable();
                 $table->boolean('is_active')->default(true);
                 $table->timestamps();
             });
@@ -234,6 +238,8 @@ return new class extends Migration
                 $table->foreignId('member_id')->constrained('gym_members')->cascadeOnDelete();
                 $table->date('booking_date');
                 $table->string('status')->default('reserved');
+                $table->timestamp('checked_in_at')->nullable();
+                $table->string('notes')->nullable();
                 $table->timestamps();
                 $table->unique(['class_id', 'member_id', 'booking_date']);
             });

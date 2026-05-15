@@ -128,6 +128,21 @@ class GymSeeder extends Seeder
             );
         }
 
+        foreach ([
+            ['Bajar grasa', 'Reducción de porcentaje graso y mejora metabólica.'],
+            ['Ganar masa muscular', 'Hipertrofia, fuerza progresiva y alimentación enfocada.'],
+            ['Tonificar', 'Mejorar composición corporal con entrenamiento mixto.'],
+            ['Mejorar resistencia', 'Cardio, capacidad aeróbica y acondicionamiento.'],
+            ['Rehabilitación / movilidad', 'Retorno progresivo, movilidad y prevención de lesiones.'],
+            ['Salud general', 'Actividad física constante y hábitos saludables.'],
+            ['Preparación deportiva', 'Objetivos específicos por disciplina o competencia.'],
+        ] as [$name, $description]) {
+            DB::table('gym_fitness_goals')->updateOrInsert(
+                ['name' => $name],
+                ['description' => $description, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]
+            );
+        }
+
         $memberRows = [
             ['M-0001', 'Andrea', 'Paredes', '76543210', 'andrea@mail.test', '987111111', 'Bajar grasa y tonificar', 'active'],
             ['M-0002', 'Luis', 'Cáceres', '71543210', 'luis@mail.test', '987222222', 'Ganar masa muscular', 'active'],
@@ -216,18 +231,25 @@ class GymSeeder extends Seeder
         }
 
         foreach ([
-            ['Funcional HIIT', 'Funcional', 'Lunes', '07:00', '07:50', 24],
-            ['Spinning Pro', 'Cardio', 'Miércoles', '19:00', '19:45', 20],
-            ['Musculación guiada', 'Fuerza', 'Viernes', '18:00', '19:00', 16],
-        ] as [$name, $category, $weekday, $startsAt, $endsAt, $capacity]) {
+            ['Funcional HIIT', 'Funcional', 'Intermedio', 'Lunes', '07:00', '07:50', 24, '#ffcc00', 'Sala funcional'],
+            ['Spinning Pro', 'Cardio', 'Todos', 'Miércoles', '19:00', '19:45', 20, '#22c55e', 'Sala cycling'],
+            ['Musculación guiada', 'Fuerza', 'Principiante', 'Viernes', '18:00', '19:00', 16, '#0f172a', 'Zona pesas'],
+            ['MMA Striking', 'MMA', 'Intermedio', 'Martes', '20:00', '21:20', 18, '#ef4444', 'Tatami'],
+            ['Sparring controlado', 'MMA', 'Avanzado', 'Sábado', '10:00', '11:30', 12, '#7c3aed', 'Jaula / Tatami'],
+            ['Brazilian Jiu-Jitsu', 'Grappling', 'Todos', 'Jueves', '20:00', '21:30', 20, '#2563eb', 'Tatami'],
+        ] as [$name, $category, $level, $weekday, $startsAt, $endsAt, $capacity, $color, $room]) {
             DB::table('gym_classes')->updateOrInsert(
                 ['name' => $name, 'weekday' => $weekday, 'starts_at' => $startsAt],
                 [
                     'category' => $category,
+                    'level' => $level,
                     'branch_id' => $branchId,
+                    'room' => $room,
                     'trainer_id' => $trainer->id,
                     'ends_at' => $endsAt,
                     'capacity' => $capacity,
+                    'color' => $color,
+                    'description' => 'Clase programada para control de cupos, reservas y asistencia.',
                     'is_active' => true,
                     'created_at' => now(),
                     'updated_at' => now(),

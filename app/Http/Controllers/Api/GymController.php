@@ -162,6 +162,26 @@ class GymController extends Controller
         return response()->json(DB::table('gym_plans')->orderBy('price')->get());
     }
 
+    public function fitnessGoals(): JsonResponse
+    {
+        return response()->json(DB::table('gym_fitness_goals')->where('is_active', true)->orderBy('name')->get());
+    }
+
+    public function storeFitnessGoal(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:120', Rule::unique('gym_fitness_goals', 'name')],
+            'description' => ['nullable', 'string', 'max:255'],
+        ]);
+        $data['is_active'] = true;
+        $data['created_at'] = now();
+        $data['updated_at'] = now();
+
+        $id = DB::table('gym_fitness_goals')->insertGetId($data);
+
+        return response()->json(DB::table('gym_fitness_goals')->find($id), 201);
+    }
+
     public function storePlan(Request $request): JsonResponse
     {
         $data = $this->validatePlan($request);
@@ -398,6 +418,16 @@ class GymController extends Controller
             ->get());
     }
 
+    public function memberMemberships(int $member): JsonResponse
+    {
+        return response()->json(DB::table('gym_memberships')
+            ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
+            ->select('gym_memberships.*', 'gym_plans.name as plan_name')
+            ->where('gym_memberships.member_id', $member)
+            ->orderByDesc('gym_memberships.id')
+            ->get());
+    }
+
     public function payments(): JsonResponse
     {
         return response()->json(DB::table('gym_payments')
@@ -456,15 +486,138 @@ class GymController extends Controller
     {
         return response()->json(DB::table('gym_classes')
             ->leftJoin('users', 'users.id', '=', 'gym_classes.trainer_id')
-            ->select('gym_classes.*', 'users.name as trainer_name')
+            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_classes.branch_id')
+            ->select('gym_classes.*', 'users.name as trainer_name', 'gym_branches.name as branch_name')
             ->orderBy('weekday')
             ->orderBy('starts_at')
             ->get());
     }
 
+    public function storeClass(Request $request): JsonResponse
+    {
+        $data = $this->validateClass($request);
+        $data['created_at'] = now();
+        $data['updated_at'] = now();
+
+        $id = DB::table('gym_classes')->insertGetId($data);
+
+        return response()->json(DB::table('gym_classes')->find($id), 201);
+    }
+
+    public function updateClass(Request $request, int $class): JsonResponse
+    {
+        $data = $this->validateClass($request);
+        $data['updated_at'] = now();
+
+        DB::table('gym_classes')->where('id', $class)->update($data);
+
+        return response()->json(DB::table('gym_classes')->find($class));
+    }
+
+    public function destroyClass(int $class): JsonResponse
+    {
+        $hasBookings = DB::table('gym_class_bookings')->where('class_id', $class)->exists();
+
+        if ($hasBookings) {
+            DB::table('gym_classes')->where('id', $class)->update([
+                'is_active' => false,
+                'updated_at' => now(),
+            ]);
+
+            return response()->json(['ok' => true, 'mode' => 'deactivated', 'message' => 'La clase tiene reservas; se desactivó para conservar histórico.']);
+        }
+
+        DB::table('gym_classes')->where('id', $class)->delete();
+
+        return response()->json(['ok' => true, 'mode' => 'deleted']);
+    }
+
+    public function classBookings(Request $request, int $class): JsonResponse
+    {
+        $date = (string) $request->query('date', now()->toDateString());
+
+        return response()->json(DB::table('gym_class_bookings')
+            ->join('gym_members', 'gym_members.id', '=', 'gym_class_bookings.member_id')
+            ->select('gym_class_bookings.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_members.dni')
+            ->where('gym_class_bookings.class_id', $class)
+            ->where('gym_class_bookings.booking_date', $date)
+            ->orderByDesc('gym_class_bookings.id')
+            ->get());
+    }
+
+    public function storeClassBooking(Request $request, int $class): JsonResponse
+    {
+        $gymClass = DB::table('gym_classes')->where('id', $class)->firstOrFail();
+        $data = $request->validate([
+            'member_id' => ['required', 'exists:gym_members,id'],
+            'booking_date' => ['required', 'date'],
+            'notes' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $reserved = DB::table('gym_class_bookings')
+            ->where('class_id', $class)
+            ->where('booking_date', $data['booking_date'])
+            ->whereIn('status', ['reserved', 'attended'])
+            ->count();
+
+        if ($reserved >= (int) $gymClass->capacity) {
+            return response()->json(['message' => 'La clase ya no tiene cupos disponibles.'], 422);
+        }
+
+        DB::table('gym_class_bookings')->updateOrInsert(
+            ['class_id' => $class, 'member_id' => $data['member_id'], 'booking_date' => $data['booking_date']],
+            ['status' => 'reserved', 'notes' => $data['notes'] ?? null, 'created_at' => now(), 'updated_at' => now()]
+        );
+
+        return response()->json(['ok' => true], 201);
+    }
+
+    public function checkInClassBooking(int $booking): JsonResponse
+    {
+        DB::table('gym_class_bookings')->where('id', $booking)->update([
+            'status' => 'attended',
+            'checked_in_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return response()->json(['ok' => true]);
+    }
+
+    public function cancelClassBooking(int $booking): JsonResponse
+    {
+        DB::table('gym_class_bookings')->where('id', $booking)->update([
+            'status' => 'cancelled',
+            'updated_at' => now(),
+        ]);
+
+        return response()->json(['ok' => true]);
+    }
+
     public function equipment(): JsonResponse
     {
         return response()->json(DB::table('gym_equipment')->orderBy('next_maintenance_on')->get());
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validateClass(Request $request): array
+    {
+        return $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'category' => ['required', 'string', 'max:80'],
+            'level' => ['required', 'string', 'max:40'],
+            'branch_id' => ['nullable', 'exists:gym_branches,id'],
+            'room' => ['nullable', 'string', 'max:120'],
+            'trainer_id' => ['nullable', 'exists:users,id'],
+            'weekday' => ['required', Rule::in(['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'])],
+            'starts_at' => ['required', 'date_format:H:i'],
+            'ends_at' => ['required', 'date_format:H:i', 'after:starts_at'],
+            'capacity' => ['required', 'integer', 'min:1', 'max:500'],
+            'color' => ['required', 'string', 'max:20'],
+            'description' => ['nullable', 'string'],
+            'is_active' => ['required', 'boolean'],
+        ]);
     }
 
     public function expenses(Request $request): JsonResponse
