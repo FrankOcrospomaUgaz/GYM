@@ -140,16 +140,71 @@ function fieldClass(extra = "") {
   return `min-h-11 rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm outline-[#ffcc00] transition focus:border-[#ffcc00] focus:ring-4 focus:ring-[#ffcc00]/20 ${extra}`;
 }
 
+const cellTranslations: Record<string, Record<string, string>> = {
+  method: {
+    cash: "Efectivo",
+    card: "Tarjeta",
+    transfer: "Transferencia",
+    yape: "Yape",
+    plin: "Plin",
+  },
+  payment_method: {
+    cash: "Efectivo",
+    card: "Tarjeta",
+    transfer: "Transferencia",
+    yape: "Yape",
+    plin: "Plin",
+  },
+  status: {
+    active: "Activo",
+    inactive: "Inactivo",
+    blocked: "Bloqueado",
+    paid: "Pagado",
+    pending: "Pendiente",
+    overdue: "Vencido",
+    partial: "Parcial",
+    annulled: "Anulado",
+    reserved: "Reservado",
+    attended: "Asistió",
+    cancelled: "Cancelado",
+    replaced: "Reemplazado",
+    expired: "Vencido",
+    operational: "Operativo",
+    maintenance: "En mantenimiento",
+    damaged: "Averiado",
+  },
+  result: {
+    allowed: "Acceso autorizado",
+    blocked: "Acceso denegado",
+    denied: "Acceso denegado",
+  },
+};
+
 function formatCell(column: string, value: unknown) {
   if (column === "proof_url") return value ? <a className="font-bold text-blue-700 underline" href={String(value)} target="_blank" rel="noreferrer">Ver foto</a> : "-";
+  if (["checked_in_at", "checked_out_at", "paid_on", "starts_on", "ends_on", "next_maintenance_on"].includes(column)) return formatDateTime(value);
   if (column.includes("amount") || column === "price" || column === "discount") return money(value);
   if (column === "duration_days") return `${value ?? 0} días`;
   if (column === "grace_days") return `${value ?? 0} días`;
   if (column === "monthly_fee") return money(value);
   if (column === "selected_days" && Array.isArray(value)) return value.join(", ");
   if (typeof value === "boolean" || value === 0 || value === 1) return Boolean(value) ? "Sí" : "No";
-  if (column === "status") return ({ active: "Activo", inactive: "Inactivo", blocked: "Bloqueado", paid: "Pagado" } as Record<string, string>)[String(value)] ?? String(value ?? "-");
+  if (cellTranslations[column]?.[String(value)]) return cellTranslations[column][String(value)];
   return String(value ?? "-");
+}
+
+function formatDateTime(value: unknown) {
+  if (!value) return "-";
+  const text = String(value);
+  const date = new Date(text.includes("T") ? text : text.replace(" ", "T"));
+  if (Number.isNaN(date.getTime())) return text;
+  const hasTime = /\d{2}:\d{2}/.test(text);
+  return date.toLocaleDateString("es-PE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    ...(hasTime ? { hour: "2-digit", minute: "2-digit" } : {}),
+  });
 }
 
 function nextDateForWeekday(weekday: string) {
@@ -599,7 +654,7 @@ export function GymPage() {
           {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio"><DataTable title="Socios registrados" rows={members} columns={["member_code", "dni", "first_name", "last_name", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<><button onClick={() => void checkIn(row.id)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Ingreso</button><button onClick={() => void openMemberMemberships(row)} className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">Membresías</button></>} />} /></Module> : null}
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
           {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
-          {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "result", "notes"]} /></Module> : null}
+          {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} /></Module> : null}
           {tab === "classes" ? <ClassesModule classes={classes} subscriptions={trainingSubscriptions} onNew={openNewClass} onNewSubscription={openTrainingSubscription} onEdit={openEditClass} onDelete={confirmDeleteClass} onOpenDetail={(gymClass) => void openClassDetail(gymClass)} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos."><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} /></Module> : null}
           {tab === "finance" ? <Module title="Caja" subtitle="Pagos recibidos y gastos operativos." onNew={() => setExpenseModalOpen(true)} newLabel="Registrar gasto"><DataTable title="Pagos recibidos" rows={payments} columns={["receipt_number", "member_name", "amount", "method", "paid_on", "proof_url", "status"]} /></Module> : null}
