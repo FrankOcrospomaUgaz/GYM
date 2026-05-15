@@ -6,6 +6,9 @@ import { useAuth } from "../context/AuthContext";
 type AnyRow = Record<string, any>;
 type Tab = "dashboard" | "members" | "plans" | "memberships" | "attendance" | "classes" | "finance" | "equipment" | "system";
 type ConfirmState = { title: string; body: string; onConfirm: () => Promise<void> } | null;
+type MemberModalContext = "general" | "training";
+
+const classDisciplines = ["MMA", "Sparring", "Box", "Brazilian Jiu-Jitsu", "Muay Thai", "Funcional", "Cardio", "Fuerza", "Yoga"];
 
 const tabs: { id: Tab; label: string; icon: any }[] = [
   { id: "dashboard", label: "Panel", icon: Activity },
@@ -305,6 +308,7 @@ export function GymPage() {
   const [editingClassId, setEditingClassId] = useState<number | null>(null);
   const [editingMemberId, setEditingMemberId] = useState<number | null>(null);
   const [editingPlanId, setEditingPlanId] = useState<number | null>(null);
+  const [memberModalContext, setMemberModalContext] = useState<MemberModalContext>("general");
   const [memberModalOpen, setMemberModalOpen] = useState(false);
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [saleModalOpen, setSaleModalOpen] = useState(false);
@@ -367,6 +371,14 @@ export function GymPage() {
 
   function openNewMember() {
     setEditingMemberId(null);
+    setMemberModalContext("general");
+    setMemberForm({ ...emptyMember, branch_id: branches[0]?.id ? String(branches[0].id) : "" });
+    setMemberModalOpen(true);
+  }
+
+  function openTrainingMemberModal() {
+    setEditingMemberId(null);
+    setMemberModalContext("training");
     setMemberForm({ ...emptyMember, branch_id: branches[0]?.id ? String(branches[0].id) : "" });
     setMemberModalOpen(true);
   }
@@ -389,6 +401,7 @@ export function GymPage() {
 
   function openEditMember(member: AnyRow) {
     setEditingMemberId(member.id);
+    setMemberModalContext("general");
     setMemberForm({ ...emptyMember, ...member, branch_id: member.branch_id ? String(member.branch_id) : "" });
     setMemberModalOpen(true);
   }
@@ -397,15 +410,24 @@ export function GymPage() {
     event.preventDefault();
     setMessage("");
     const payload = { ...memberForm, document_number: memberForm.dni, branch_id: memberForm.branch_id || null };
+    let savedMember: AnyRow | null = null;
     if (editingMemberId) {
-      await httpClient.put(`/api/gym/members/${editingMemberId}`, payload);
+      const response = await httpClient.put(`/api/gym/members/${editingMemberId}`, payload);
+      savedMember = response.data;
       setMessage("Socio actualizado correctamente.");
     } else {
-      await httpClient.post("/api/gym/members", payload);
+      const response = await httpClient.post("/api/gym/members", payload);
+      savedMember = response.data;
       setMessage("Socio registrado correctamente.");
     }
     setMemberModalOpen(false);
     await loadAll();
+    if (memberModalContext === "training" && savedMember?.id) {
+      setTrainingSubscriptionForm((current: AnyRow) => ({ ...current, member_id: String(savedMember.id) }));
+      setMembers((current) => current.some((member) => Number(member.id) === Number(savedMember?.id)) ? current : [savedMember as AnyRow, ...current]);
+      setTrainingSubscriptionModalOpen(true);
+    }
+    setMemberModalContext("general");
   }
 
   async function lookupDni(dni: string) {
@@ -707,14 +729,14 @@ export function GymPage() {
       </main>
 
       <BottomNav tab={tab} onSelect={selectTab} tabs={visibleTabs.filter((item) => item.id !== "system")} />
-      <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => setMemberModalOpen(false)} onSubmit={saveMember} />
       <PlanModal open={planModalOpen} editing={Boolean(editingPlanId)} form={planForm} onChange={setPlanForm} onClose={() => setPlanModalOpen(false)} onSubmit={savePlan} />
       <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} onChange={setSaleForm} onClose={() => setSaleModalOpen(false)} onSubmit={sellMembership} />
       <MemberMembershipModal open={memberMembershipModalOpen} member={selectedMember} rows={memberMemberships} saleForm={saleForm} plans={plans} onSaleChange={setSaleForm} onClose={() => setMemberMembershipModalOpen(false)} onSubmit={sellMembership} />
       <ExpenseModal open={expenseModalOpen} form={expenseForm} onChange={setExpenseForm} onClose={() => setExpenseModalOpen(false)} onSubmit={saveExpense} />
       <ClassModal open={classModalOpen} editing={Boolean(editingClassId)} form={classForm} branches={branches} onChange={setClassForm} onClose={() => setClassModalOpen(false)} onSubmit={saveClass} />
       <ClassDetailModal open={classDetailOpen} gymClass={selectedClass} members={members} rows={classBookings} bookingDate={classBookingDate} selectedMemberId={classBookingMemberId} onDateChange={(date) => { setClassBookingDate(date); void reloadClassBookings(date); }} onMemberChange={setClassBookingMemberId} onReserve={reserveClass} onCheckIn={checkInClassBooking} onCancel={cancelClassBooking} onClose={() => setClassDetailOpen(false)} />
-      <TrainingSubscriptionModal open={trainingSubscriptionModalOpen} form={trainingSubscriptionForm} members={members} onChange={setTrainingSubscriptionForm} onClose={() => setTrainingSubscriptionModalOpen(false)} onSubmit={saveTrainingSubscription} />
+      <TrainingSubscriptionModal open={trainingSubscriptionModalOpen} form={trainingSubscriptionForm} members={members} onCreateMember={openTrainingMemberModal} onChange={setTrainingSubscriptionForm} onClose={() => setTrainingSubscriptionModalOpen(false)} onSubmit={saveTrainingSubscription} />
+      <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => { setMemberModalContext("general"); setMemberModalOpen(false); }} onSubmit={saveMember} />
       <ConfirmModal state={confirm} onClose={() => setConfirm(null)} />
     </div>
   );
@@ -1009,7 +1031,7 @@ function ClassModal({ open, editing, form, branches, onChange, onClose, onSubmit
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Nombre" value={form.name} onChange={(value) => onChange({ ...form, name: value })} required />
-          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Disciplina</RequiredLabel><select required value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value })} className={fieldClass()}><option>MMA</option><option>Sparring</option><option>Box</option><option>Brazilian Jiu-Jitsu</option><option>Muay Thai</option><option>Funcional</option><option>Cardio</option><option>Fuerza</option><option>Yoga</option></select></label>
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Disciplina</RequiredLabel><select required value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value })} className={fieldClass()}>{classDisciplines.map((discipline) => <option key={discipline}>{discipline}</option>)}</select></label>
           <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Nivel</RequiredLabel><select required value={form.level} onChange={(event) => onChange({ ...form, level: event.target.value })} className={fieldClass()}><option>Todos</option><option>Principiante</option><option>Intermedio</option><option>Avanzado</option><option>Competidor</option></select></label>
           <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Día</RequiredLabel><select required value={form.weekday} onChange={(event) => onChange({ ...form, weekday: event.target.value })} className={fieldClass()}>{["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"].map((day) => <option key={day}>{day}</option>)}</select></label>
           <Field label="Hora inicio" type="time" value={form.starts_at} onChange={(value) => onChange({ ...form, starts_at: value })} required />
@@ -1154,7 +1176,7 @@ function ClassDetailModal({ open, gymClass, members, rows, bookingDate, selected
   );
 }
 
-function TrainingSubscriptionModal({ open, form, members, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+function TrainingSubscriptionModal({ open, form, members, onCreateMember, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; onCreateMember: () => void; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
   const weekdays = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
   const selectedDays: string[] = form.selected_days ?? [];
 
@@ -1168,9 +1190,18 @@ function TrainingSubscriptionModal({ open, form, members, onChange, onClose, onS
   return (
     <Modal open={open} title="Mensualidad de clases" subtitle="El socio paga mensual y define qué días y a qué hora entrena." onClose={onClose}>
       <form onSubmit={onSubmit} className="space-y-4">
-        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><select required value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass()}><option value="">Seleccione socio</option>{members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}</select></label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          <div className="flex items-center justify-between gap-3">
+            <RequiredLabel>Socio</RequiredLabel>
+            <button type="button" onClick={onCreateMember} className="rounded-xl bg-zinc-950 px-3 py-2 text-[11px] font-black normal-case tracking-normal text-white">Crear socio</button>
+          </div>
+          <select required value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass()}>
+            <option value="">Seleccione socio</option>
+            {members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}
+          </select>
+        </label>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Disciplina" value={form.discipline} onChange={(value) => onChange({ ...form, discipline: value })} required />
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Disciplina</RequiredLabel><select required value={form.discipline} onChange={(event) => onChange({ ...form, discipline: event.target.value })} className={fieldClass()}>{classDisciplines.map((discipline) => <option key={discipline}>{discipline}</option>)}</select></label>
           <Field label="Mensualidad" type="number" value={form.monthly_fee} onChange={(value) => onChange({ ...form, monthly_fee: value })} required />
           <Field label="Inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required />
           <Field label="Hora de entrenamiento" type="time" value={form.preferred_time} onChange={(value) => onChange({ ...form, preferred_time: value })} required />
