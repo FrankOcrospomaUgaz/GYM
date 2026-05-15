@@ -1,0 +1,180 @@
+@import "tailwindcss";
+
+/* Cada .tsx con utilidades de Tailwind debe listarse en @source (Vite + Windows). */
+@source "../js/App.tsx";
+@source "../js/layouts/ApexLayout.tsx";
+@source "../js/pages/DashboardHome.tsx";
+@source "../js/pages/LoginPage.tsx";
+@source "../js/pages/GymPage.tsx";
+@source "../js/pages/UsersPage.tsx";
+@source "../js/pages/ProjectsPage.tsx";
+@source "../js/pages/OperationalPages.tsx";
+@source "../js/xpande/XpandeUi.tsx";
+@source "../js/xpande/FormModal.tsx";
+@source "../js/xpande/LabTableKit.tsx";
+@source "../js/xpande/apiError.ts";
+@source "../js/xpande/http.ts";
+@source "../js/users/api.ts";
+@source "../js/auth/api.ts";
+@source "../js/auth/types.ts";
+@source "../js/context/AuthContext.tsx";
+@source "../js/main.tsx";
+@source "../js/types/apex.ts";
+@source "../js/components/Sidebar.tsx";
+@source "../js/components/TopBar.tsx";
+@source "../js/components/ConfirmModal.tsx";
+@source "../js/components/DateInput.tsx";
+@source "../js/components/KpiCards.tsx";
+@source "../js/components/OverviewChart.tsx";
+@source "../js/components/OrdersByStatus.tsx";
+@source "../js/components/RevenueLineChart.tsx";
+@source "../js/components/MonthlyGoalsCard.tsx";
+@source "../js/components/RecentOrdersTable.tsx";
+@source "../js/components/RecentActivityList.tsx";
+@source "../js/context/ThemeContext.tsx";
+@source "../views/**/*.blade.php";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-apex-bg: #000000;
+  --color-apex-surface: #121212;
+  --color-apex-elevated: #161616;
+  --color-apex-border: rgba(255, 255, 255, 0.06);
+  --color-apex-neon: #007bff;
+  --color-apex-neon-dim: #0a2744;
+  --color-apex-light-canvas: #f9fafb;
+  --color-apex-light-primary: #007bff;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-apex-bg);
+  color: #e4e4e7;
+  -webkit-font-smoothing: antialiased;
+}
+
+html[data-apex-theme="light"] body {
+  background: #f9fafb;
+  color: #111827;
+}
+
+/* Scroll vertical: área principal */
+.apex-main-scroll--light {
+  scrollbar-color: #cbd5e1 #f3f4f6;
+}
+.apex-main-scroll--light::-webkit-scrollbar {
+  width: 10px;
+}
+.apex-main-scroll--light::-webkit-scrollbar-track {
+  background: #f3f4f6;
+}
+.apex-main-scroll--light::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+  border: 2px solid #f3f4f6;
+}
+.apex-main-scroll--light::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+.apex-main-scroll--dark {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.apex-main-scroll--dark::-webkit-scrollbar {
+  width: 6px;
+}
+.apex-main-scroll--dark::-webkit-scrollbar-track {
+  background: transparent;
+}
+.apex-main-scroll--dark::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 9999px;
+}
+.apex-main-scroll--dark::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+/* Scroll vertical: sidebar */
+.apex-sidebar-scroll--light {
+  scrollbar-color: #475569 #0f172a;
+}
+.apex-sidebar-scroll--light::-webkit-scrollbar {
+  width: 8px;
+}
+.apex-sidebar-scroll--light::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+.apex-sidebar-scroll--light::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 9999px;
+}
+.apex-sidebar-scroll--light::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Sidebar oscuro: barra casi invisible, thumb fino estilo mockup */
+.apex-sidebar-scroll--dark {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+.apex-sidebar-scroll--dark::-webkit-scrollbar {
+  width: 3px;
+}
+.apex-sidebar-scroll--dark::-webkit-scrollbar-track {
+  background: transparent;
+}
+.apex-sidebar-scroll--dark::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.12);
+  border-radius: 0;
+}
+.apex-sidebar-scroll--dark:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.22);
+}
+.apex-sidebar-scroll--dark::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.32);
+}
+
+/* Scroll horizontal: tabla en tarjeta */
+.apex-table-scroll--light {
+  scrollbar-color: #cbd5e1 #f9fafb;
+}
+.apex-table-scroll--light::-webkit-scrollbar {
+  height: 8px;
+}
+.apex-table-scroll--light::-webkit-scrollbar-track {
+  background: #f9fafb;
+  border-radius: 9999px;
+}
+.apex-table-scroll--light::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+
+.apex-table-scroll--dark {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+.apex-table-scroll--dark::-webkit-scrollbar {
+  height: 4px;
+}
+.apex-table-scroll--dark::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 0;
+}
+.apex-table-scroll--dark::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 0;
+}
+.apex-table-scroll--dark::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+* {
+  box-sizing: border-box;
+}
