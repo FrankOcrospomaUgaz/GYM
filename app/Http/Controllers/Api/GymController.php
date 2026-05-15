@@ -126,6 +126,30 @@ class GymController extends Controller
         return response()->json(DB::table('gym_members')->find($member));
     }
 
+    public function destroyMember(int $member): JsonResponse
+    {
+        $hasHistory = DB::table('gym_memberships')->where('member_id', $member)->exists()
+            || DB::table('gym_payments')->where('member_id', $member)->exists()
+            || DB::table('gym_attendances')->where('member_id', $member)->exists();
+
+        if ($hasHistory) {
+            DB::table('gym_members')->where('id', $member)->update([
+                'status' => 'inactive',
+                'updated_at' => now(),
+            ]);
+
+            return response()->json([
+                'ok' => true,
+                'mode' => 'deactivated',
+                'message' => 'El socio tiene historial; se desactivó para conservar auditoría.',
+            ]);
+        }
+
+        DB::table('gym_members')->where('id', $member)->delete();
+
+        return response()->json(['ok' => true, 'mode' => 'deleted']);
+    }
+
     public function plans(): JsonResponse
     {
         return response()->json(DB::table('gym_plans')->orderBy('price')->get());

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { Activity, Bell, CalendarDays, CreditCard, Dumbbell, LogOut, Menu, Search, ShieldCheck, Users, Wrench, X } from "lucide-react";
+import { Activity, Bell, CalendarDays, CreditCard, Dumbbell, Edit3, LogOut, Menu, Plus, Search, ShieldCheck, Trash2, Users, Wrench, X } from "lucide-react";
 import { httpClient } from "../http/client";
 import { useAuth } from "../context/AuthContext";
 
 type AnyRow = Record<string, any>;
 type Tab = "dashboard" | "members" | "plans" | "memberships" | "attendance" | "classes" | "finance" | "equipment";
+type ConfirmState = { title: string; body: string; onConfirm: () => Promise<void> } | null;
 
 const tabs: { id: Tab; label: string; icon: any }[] = [
   { id: "dashboard", label: "Panel", icon: Activity },
@@ -31,6 +32,7 @@ const emptyMember = {
   emergency_contact_phone: "",
   medical_notes: "",
   fitness_goal: "",
+  status: "active",
   branch_id: "",
 };
 
@@ -47,6 +49,45 @@ const emptyPlan = {
   is_active: true,
 };
 
+const labels: Record<string, string> = {
+  member_code: "Código",
+  first_name: "Nombres",
+  last_name: "Apellidos",
+  document_number: "Documento",
+  phone: "Teléfono",
+  status: "Estado",
+  branch_name: "Sede",
+  code: "Código",
+  name: "Nombre",
+  price: "Precio",
+  duration_days: "Duración",
+  grace_days: "Gracia",
+  daily_access_limit: "Accesos/día",
+  includes_classes: "Clases",
+  includes_trainer: "Entrenador",
+  is_active: "Activo",
+  member_name: "Socio",
+  plan_name: "Plan",
+  starts_on: "Inicio",
+  ends_on: "Vence",
+  discount: "Descuento",
+  receipt_number: "Comprobante",
+  amount: "Monto",
+  method: "Medio",
+  paid_on: "Fecha",
+  checked_in_at: "Entrada",
+  checked_out_at: "Salida",
+  result: "Resultado",
+  notes: "Notas",
+  category: "Categoría",
+  weekday: "Día",
+  starts_at: "Inicia",
+  ends_at: "Termina",
+  capacity: "Cupos",
+  trainer_name: "Entrenador",
+  next_maintenance_on: "Próximo mantenimiento",
+};
+
 function money(value: unknown) {
   return `S/ ${Number(value ?? 0).toLocaleString("es-PE", { minimumFractionDigits: 2 })}`;
 }
@@ -60,12 +101,11 @@ function fieldClass(extra = "") {
 }
 
 function formatCell(column: string, value: unknown) {
-  if (column.includes("amount") || column === "price") {
-    return money(value);
-  }
-  if (typeof value === "boolean" || value === 0 || value === 1) {
-    return Boolean(value) ? "Sí" : "No";
-  }
+  if (column.includes("amount") || column === "price" || column === "discount") return money(value);
+  if (column === "duration_days") return `${value ?? 0} días`;
+  if (column === "grace_days") return `${value ?? 0} días`;
+  if (typeof value === "boolean" || value === 0 || value === 1) return Boolean(value) ? "Sí" : "No";
+  if (column === "status") return ({ active: "Activo", inactive: "Inactivo", blocked: "Bloqueado", paid: "Pagado" } as Record<string, string>)[String(value)] ?? String(value ?? "-");
   return String(value ?? "-");
 }
 
@@ -85,9 +125,15 @@ export function GymPage() {
   const [notifications, setNotifications] = useState<AnyRow[]>([]);
   const [memberForm, setMemberForm] = useState<AnyRow>(emptyMember);
   const [planForm, setPlanForm] = useState<AnyRow>(emptyPlan);
-  const [editingPlanId, setEditingPlanId] = useState<number | null>(null);
   const [saleForm, setSaleForm] = useState({ member_id: "", plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", notes: "" });
   const [expenseForm, setExpenseForm] = useState({ category: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", description: "" });
+  const [editingMemberId, setEditingMemberId] = useState<number | null>(null);
+  const [editingPlanId, setEditingPlanId] = useState<number | null>(null);
+  const [memberModalOpen, setMemberModalOpen] = useState(false);
+  const [planModalOpen, setPlanModalOpen] = useState(false);
+  const [saleModalOpen, setSaleModalOpen] = useState(false);
+  const [expenseModalOpen, setExpenseModalOpen] = useState(false);
+  const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
 
@@ -128,13 +174,66 @@ export function GymPage() {
     void loadAll();
   }, []);
 
+  function openNewMember() {
+    setEditingMemberId(null);
+    setMemberForm(emptyMember);
+    setMemberModalOpen(true);
+  }
+
+  function openEditMember(member: AnyRow) {
+    setEditingMemberId(member.id);
+    setMemberForm({ ...emptyMember, ...member, branch_id: member.branch_id ? String(member.branch_id) : "" });
+    setMemberModalOpen(true);
+  }
+
   async function saveMember(event: FormEvent) {
     event.preventDefault();
     setMessage("");
-    await httpClient.post("/api/gym/members", { ...memberForm, branch_id: memberForm.branch_id || null });
-    setMemberForm(emptyMember);
-    setMessage("Socio registrado correctamente.");
+    const payload = { ...memberForm, branch_id: memberForm.branch_id || null };
+    if (editingMemberId) {
+      await httpClient.put(`/api/gym/members/${editingMemberId}`, payload);
+      setMessage("Socio actualizado correctamente.");
+    } else {
+      await httpClient.post("/api/gym/members", payload);
+      setMessage("Socio registrado correctamente.");
+    }
+    setMemberModalOpen(false);
     await loadAll();
+  }
+
+  function confirmDeleteMember(member: AnyRow) {
+    setConfirm({
+      title: "Desactivar socio",
+      body: `¿Deseas eliminar o desactivar a ${member.first_name} ${member.last_name}? Si tiene historial, se conservará y quedará inactivo.`,
+      onConfirm: async () => {
+        const response = await httpClient.delete(`/api/gym/members/${member.id}`);
+        setMessage(response.data?.message ?? "Socio eliminado correctamente.");
+        await loadAll();
+      },
+    });
+  }
+
+  function openNewPlan() {
+    setEditingPlanId(null);
+    setPlanForm(emptyPlan);
+    setPlanModalOpen(true);
+  }
+
+  function openEditPlan(plan: AnyRow) {
+    setEditingPlanId(plan.id);
+    setPlanForm({
+      name: plan.name ?? "",
+      code: plan.code ?? "",
+      price: String(plan.price ?? ""),
+      duration_days: String(plan.duration_days ?? 30),
+      grace_days: String(plan.grace_days ?? 0),
+      daily_access_limit: plan.daily_access_limit ? String(plan.daily_access_limit) : "",
+      includes_classes: Boolean(plan.includes_classes),
+      includes_trainer: Boolean(plan.includes_trainer),
+      description: plan.description ?? "",
+      is_active: Boolean(plan.is_active),
+    });
+    setPlanModalOpen(true);
   }
 
   async function savePlan(event: FormEvent) {
@@ -151,7 +250,6 @@ export function GymPage() {
       includes_trainer: Boolean(planForm.includes_trainer),
       is_active: Boolean(planForm.is_active),
     };
-
     if (editingPlanId) {
       await httpClient.put(`/api/gym/plans/${editingPlanId}`, payload);
       setMessage("Plan actualizado correctamente.");
@@ -159,42 +257,27 @@ export function GymPage() {
       await httpClient.post("/api/gym/plans", payload);
       setMessage("Plan creado correctamente.");
     }
-
-    setPlanForm(emptyPlan);
-    setEditingPlanId(null);
+    setPlanModalOpen(false);
     await loadAll();
   }
 
-  function editPlan(plan: AnyRow) {
-    setEditingPlanId(plan.id);
-    setPlanForm({
-      name: plan.name ?? "",
-      code: plan.code ?? "",
-      price: String(plan.price ?? ""),
-      duration_days: String(plan.duration_days ?? 30),
-      grace_days: String(plan.grace_days ?? 0),
-      daily_access_limit: plan.daily_access_limit ? String(plan.daily_access_limit) : "",
-      includes_classes: Boolean(plan.includes_classes),
-      includes_trainer: Boolean(plan.includes_trainer),
-      description: plan.description ?? "",
-      is_active: Boolean(plan.is_active),
+  function confirmDeletePlan(plan: AnyRow) {
+    setConfirm({
+      title: "Eliminar plan",
+      body: `¿Deseas eliminar o desactivar el plan "${plan.name}"? Si tiene ventas asociadas, se desactivará para conservar histórico.`,
+      onConfirm: async () => {
+        const response = await httpClient.delete(`/api/gym/plans/${plan.id}`);
+        setMessage(response.data?.message ?? "Plan eliminado correctamente.");
+        await loadAll();
+      },
     });
-    setTab("plans");
-  }
-
-  async function deletePlan(plan: AnyRow) {
-    if (!confirm(`¿Eliminar o desactivar el plan "${plan.name}"?`)) {
-      return;
-    }
-    const response = await httpClient.delete(`/api/gym/plans/${plan.id}`);
-    setMessage(response.data?.message ?? "Plan eliminado correctamente.");
-    await loadAll();
   }
 
   async function sellMembership(event: FormEvent) {
     event.preventDefault();
     setMessage("");
     await httpClient.post("/api/gym/memberships", saleForm);
+    setSaleModalOpen(false);
     setMessage("Membresía vendida y pago registrado.");
     await loadAll();
   }
@@ -210,6 +293,7 @@ export function GymPage() {
     event.preventDefault();
     await httpClient.post("/api/gym/expenses", expenseForm);
     setExpenseForm({ category: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", description: "" });
+    setExpenseModalOpen(false);
     setMessage("Gasto registrado.");
     await loadAll();
   }
@@ -257,92 +341,57 @@ export function GymPage() {
         </header>
 
         <section className="space-y-5 p-3 sm:p-4 lg:space-y-6 lg:p-8">
-          {tab === "dashboard" ? (
-            <>
-              <div className="grid grid-cols-2 gap-3 lg:gap-4 xl:grid-cols-4">{(dashboard.kpis ?? []).map((kpi: AnyRow) => <div key={kpi.label} className={cardClass()}><p className="text-xs font-bold text-zinc-500 sm:text-sm">{kpi.label}</p><p className="mt-2 text-2xl font-black sm:text-3xl">{kpi.value}</p><p className="mt-2 text-[11px] font-semibold text-zinc-400 sm:text-xs">{kpi.hint}</p></div>)}</div>
-              <div className="grid gap-5 xl:grid-cols-3">
-                <div className={`${cardClass()} xl:col-span-2`}><h2 className="text-lg font-black">Operación de hoy</h2><div className="mt-4 grid gap-3 sm:grid-cols-3"><div className="rounded-2xl bg-[#ffcc00] p-4"><p className="text-sm font-bold">Ingresos hoy</p><p className="text-3xl font-black">{dashboard.attendance_today ?? 0}</p></div><div className="rounded-2xl bg-zinc-950 p-4 text-white"><p className="text-sm font-bold">Socios activos</p><p className="text-3xl font-black">{activeMembers.length}</p></div><div className="rounded-2xl bg-white p-4 ring-1 ring-zinc-200"><p className="text-sm font-bold">Planes vendidos</p><p className="text-3xl font-black">{memberships.length}</p></div></div></div>
-                <div className={cardClass()}><h2 className="text-lg font-black">Notificaciones</h2><div className="mt-3 space-y-3">{notifications.slice(0, 5).map((item) => <div key={item.id} className="rounded-2xl bg-amber-50 p-3 text-sm"><b>{item.title}</b><p className="text-zinc-600">{item.body}</p></div>)}</div></div>
-              </div>
-            </>
-          ) : null}
-
-          {tab === "members" ? (
-            <div className="grid gap-5 xl:grid-cols-[420px_1fr]">
-              <form onSubmit={saveMember} className={cardClass()}>
-                <h2 className="text-lg font-black">Registrar socio</h2>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  {["first_name", "last_name", "document_number", "phone", "email", "birthdate", "emergency_contact_name", "emergency_contact_phone"].map((field) => <input key={field} required={["first_name", "last_name", "document_number", "phone"].includes(field)} type={field === "birthdate" ? "date" : "text"} value={memberForm[field] ?? ""} onChange={(event) => setMemberForm({ ...memberForm, [field]: event.target.value })} placeholder={field.replaceAll("_", " ")} className={fieldClass()} />)}
-                  <select value={memberForm.branch_id} onChange={(event) => setMemberForm({ ...memberForm, branch_id: event.target.value })} className={fieldClass()}><option value="">Sede</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select>
-                  <input value={memberForm.fitness_goal} onChange={(event) => setMemberForm({ ...memberForm, fitness_goal: event.target.value })} placeholder="objetivo físico" className={fieldClass()} />
-                </div>
-                <textarea value={memberForm.medical_notes} onChange={(event) => setMemberForm({ ...memberForm, medical_notes: event.target.value })} placeholder="observaciones médicas" className={fieldClass("mt-3 min-h-24 w-full")} />
-                <button className="mt-4 w-full rounded-2xl bg-[#ffcc00] px-5 py-3 font-black text-zinc-950 hover:brightness-95">Guardar socio</button>
-              </form>
-              <DataTable title="Socios registrados" rows={members} columns={["member_code", "first_name", "last_name", "document_number", "phone", "status", "branch_name"]} action={(row) => <button onClick={() => void checkIn(row.id)} className="rounded-xl bg-zinc-950 px-3 py-2 text-xs font-bold text-white">Ingreso</button>} />
-            </div>
-          ) : null}
-
-          {tab === "plans" ? (
-            <div className="grid gap-5 xl:grid-cols-[420px_1fr]">
-              <form onSubmit={savePlan} className={cardClass()}>
-                <div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black">{editingPlanId ? "Editar plan" : "Crear plan"}</h2><p className="mt-1 text-sm text-zinc-500">Precio, duración, beneficios y disponibilidad.</p></div>{editingPlanId ? <button type="button" onClick={() => { setEditingPlanId(null); setPlanForm(emptyPlan); }} className="rounded-xl border border-zinc-200 px-3 py-2 text-xs font-bold">Nuevo</button> : null}</div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <input required value={planForm.name} onChange={(event) => setPlanForm({ ...planForm, name: event.target.value })} placeholder="Nombre del plan" className={fieldClass()} />
-                  <input required value={planForm.code} onChange={(event) => setPlanForm({ ...planForm, code: event.target.value })} placeholder="Código único" className={fieldClass("uppercase")} />
-                  <input required type="number" min="0" step="0.01" value={planForm.price} onChange={(event) => setPlanForm({ ...planForm, price: event.target.value })} placeholder="Precio" className={fieldClass()} />
-                  <input required type="number" min="1" value={planForm.duration_days} onChange={(event) => setPlanForm({ ...planForm, duration_days: event.target.value })} placeholder="Duración días" className={fieldClass()} />
-                  <input required type="number" min="0" value={planForm.grace_days} onChange={(event) => setPlanForm({ ...planForm, grace_days: event.target.value })} placeholder="Días de gracia" className={fieldClass()} />
-                  <input type="number" min="1" value={planForm.daily_access_limit} onChange={(event) => setPlanForm({ ...planForm, daily_access_limit: event.target.value })} placeholder="Límite diario vacío = ilimitado" className={fieldClass()} />
-                </div>
-                <div className="mt-4 grid gap-3 rounded-2xl bg-zinc-50 p-4 text-sm font-bold">
-                  <label className="flex items-center gap-2"><input type="checkbox" checked={planForm.includes_classes} onChange={(event) => setPlanForm({ ...planForm, includes_classes: event.target.checked })} /> Incluye clases grupales</label>
-                  <label className="flex items-center gap-2"><input type="checkbox" checked={planForm.includes_trainer} onChange={(event) => setPlanForm({ ...planForm, includes_trainer: event.target.checked })} /> Incluye entrenador</label>
-                  <label className="flex items-center gap-2"><input type="checkbox" checked={planForm.is_active} onChange={(event) => setPlanForm({ ...planForm, is_active: event.target.checked })} /> Activo para ventas</label>
-                </div>
-                <textarea value={planForm.description} onChange={(event) => setPlanForm({ ...planForm, description: event.target.value })} placeholder="Descripción comercial del plan" className={fieldClass("mt-3 min-h-24 w-full")} />
-                <button className="mt-4 w-full rounded-2xl bg-[#ffcc00] px-5 py-3 font-black text-zinc-950 hover:brightness-95">{editingPlanId ? "Actualizar plan" : "Guardar plan"}</button>
-              </form>
-              <DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <div className="flex flex-wrap gap-2"><button onClick={() => editPlan(row)} className="rounded-xl bg-zinc-950 px-3 py-2 text-xs font-bold text-white">Editar</button><button onClick={() => void deletePlan(row)} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">Eliminar</button></div>} />
-            </div>
-          ) : null}
-
-          {tab === "memberships" ? (
-            <div className="grid gap-5 xl:grid-cols-[420px_1fr]">
-              <form onSubmit={sellMembership} className={cardClass()}>
-                <h2 className="text-lg font-black">Vender membresía</h2>
-                <select required value={saleForm.member_id} onChange={(event) => setSaleForm({ ...saleForm, member_id: event.target.value })} className={fieldClass("mt-4 w-full")}><option value="">Socio</option>{members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}</select>
-                <select required value={saleForm.plan_id} onChange={(event) => setSaleForm({ ...saleForm, plan_id: event.target.value })} className={fieldClass("mt-3 w-full")}><option value="">Plan</option>{plans.filter((plan) => plan.is_active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {money(plan.price)}</option>)}</select>
-                <div className="mt-3 grid gap-3 sm:grid-cols-2"><input type="date" value={saleForm.starts_on} onChange={(event) => setSaleForm({ ...saleForm, starts_on: event.target.value })} className={fieldClass()} /><input value={saleForm.discount} onChange={(event) => setSaleForm({ ...saleForm, discount: event.target.value })} placeholder="Descuento" className={fieldClass()} /></div>
-                <select value={saleForm.method} onChange={(event) => setSaleForm({ ...saleForm, method: event.target.value })} className={fieldClass("mt-3 w-full")}><option value="cash">Efectivo</option><option value="card">Tarjeta</option><option value="transfer">Transferencia</option><option value="yape">Yape</option><option value="plin">Plin</option></select>
-                <button className="mt-4 w-full rounded-2xl bg-[#ffcc00] px-5 py-3 font-black">Cobrar y activar</button>
-              </form>
-              <DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} />
-            </div>
-          ) : null}
-
-          {tab === "attendance" ? <DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "result", "notes"]} /> : null}
-          {tab === "classes" ? <DataTable title="Clases y horarios" rows={classes} columns={["name", "category", "weekday", "starts_at", "ends_at", "capacity", "trainer_name"]} /> : null}
-          {tab === "equipment" ? <DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} /> : null}
-          {tab === "finance" ? (
-            <div className="grid gap-5 xl:grid-cols-[380px_1fr]">
-              <form onSubmit={saveExpense} className={cardClass()}><h2 className="text-lg font-black">Registrar gasto</h2>{["category", "supplier", "amount", "spent_on", "payment_method", "description"].map((field) => <input key={field} required={["category", "amount", "spent_on", "payment_method"].includes(field)} type={field === "spent_on" ? "date" : "text"} value={(expenseForm as AnyRow)[field]} onChange={(event) => setExpenseForm({ ...expenseForm, [field]: event.target.value })} placeholder={field.replaceAll("_", " ")} className={fieldClass("mt-3 w-full")} />)}<button className="mt-4 w-full rounded-2xl bg-zinc-950 px-5 py-3 font-black text-white">Guardar gasto</button></form>
-              <DataTable title="Pagos recibidos" rows={payments} columns={["receipt_number", "member_name", "amount", "method", "paid_on", "status"]} />
-            </div>
-          ) : null}
+          {tab === "dashboard" ? <Dashboard dashboard={dashboard} activeMembers={activeMembers.length} memberships={memberships.length} notifications={notifications} /> : null}
+          {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio"><DataTable title="Socios registrados" rows={members} columns={["member_code", "first_name", "last_name", "document_number", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<button onClick={() => void checkIn(row.id)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Ingreso</button>} />} /></Module> : null}
+          {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
+          {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
+          {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "result", "notes"]} /></Module> : null}
+          {tab === "classes" ? <Module title="Clases" subtitle="Horarios disponibles, cupos y entrenadores asignados."><DataTable title="Clases y horarios" rows={classes} columns={["name", "category", "weekday", "starts_at", "ends_at", "capacity", "trainer_name"]} /></Module> : null}
+          {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos."><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} /></Module> : null}
+          {tab === "finance" ? <Module title="Caja" subtitle="Pagos recibidos y gastos operativos." onNew={() => setExpenseModalOpen(true)} newLabel="Registrar gasto"><DataTable title="Pagos recibidos" rows={payments} columns={["receipt_number", "member_name", "amount", "method", "paid_on", "status"]} /></Module> : null}
         </section>
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/95 px-2 py-2 shadow-[0_-10px_30px_rgba(0,0,0,0.08)] backdrop-blur-xl lg:hidden">
-        <div className="mx-auto grid max-w-md grid-cols-4 gap-1">
-          {tabs.slice(0, 4).map((item) => {
-            const Icon = item.icon;
-            return <button key={item.id} onClick={() => selectTab(item.id)} className={`rounded-2xl px-2 py-2 text-[10px] font-black ${tab === item.id ? "bg-[#ffcc00] text-zinc-950" : "text-zinc-500"}`}><Icon className="mx-auto mb-1 h-5 w-5" />{item.label}</button>;
-          })}
-        </div>
-      </nav>
+      <BottomNav tab={tab} onSelect={selectTab} />
+      <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} onChange={setMemberForm} onClose={() => setMemberModalOpen(false)} onSubmit={saveMember} />
+      <PlanModal open={planModalOpen} editing={Boolean(editingPlanId)} form={planForm} onChange={setPlanForm} onClose={() => setPlanModalOpen(false)} onSubmit={savePlan} />
+      <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} onChange={setSaleForm} onClose={() => setSaleModalOpen(false)} onSubmit={sellMembership} />
+      <ExpenseModal open={expenseModalOpen} form={expenseForm} onChange={setExpenseForm} onClose={() => setExpenseModalOpen(false)} onSubmit={saveExpense} />
+      <ConfirmModal state={confirm} onClose={() => setConfirm(null)} />
     </div>
   );
+}
+
+function Dashboard({ dashboard, activeMembers, memberships, notifications }: { dashboard: AnyRow; activeMembers: number; memberships: number; notifications: AnyRow[] }) {
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3 lg:gap-4 xl:grid-cols-4">{(dashboard.kpis ?? []).map((kpi: AnyRow) => <div key={kpi.label} className={cardClass()}><p className="text-xs font-bold text-zinc-500 sm:text-sm">{kpi.label}</p><p className="mt-2 text-2xl font-black sm:text-3xl">{kpi.value}</p><p className="mt-2 text-[11px] font-semibold text-zinc-400 sm:text-xs">{kpi.hint}</p></div>)}</div>
+      <div className="grid gap-5 xl:grid-cols-3">
+        <div className={`${cardClass()} xl:col-span-2`}><h2 className="text-lg font-black">Operación de hoy</h2><div className="mt-4 grid gap-3 sm:grid-cols-3"><MetricCard title="Ingresos hoy" value={dashboard.attendance_today ?? 0} yellow /><MetricCard title="Socios activos" value={activeMembers} dark /><MetricCard title="Planes vendidos" value={memberships} /></div></div>
+        <div className={cardClass()}><h2 className="text-lg font-black">Notificaciones</h2><div className="mt-3 space-y-3">{notifications.slice(0, 5).map((item) => <div key={item.id} className="rounded-2xl bg-amber-50 p-3 text-sm"><b>{item.title}</b><p className="text-zinc-600">{item.body}</p></div>)}</div></div>
+      </div>
+    </>
+  );
+}
+
+function MetricCard({ title, value, yellow, dark }: { title: string; value: ReactNode; yellow?: boolean; dark?: boolean }) {
+  return <div className={`rounded-2xl p-4 ${yellow ? "bg-[#ffcc00]" : dark ? "bg-zinc-950 text-white" : "bg-white ring-1 ring-zinc-200"}`}><p className="text-sm font-bold">{title}</p><p className="text-3xl font-black">{value}</p></div>;
+}
+
+function Module({ title, subtitle, children, onNew, newLabel }: { title: string; subtitle: string; children: ReactNode; onNew?: () => void; newLabel?: string }) {
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 rounded-3xl bg-zinc-950 p-4 text-white shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-5">
+        <div><p className="text-xs font-black uppercase tracking-[0.24em] text-[#ffcc00]">Administración</p><h2 className="text-2xl font-black">{title}</h2><p className="mt-1 text-sm text-zinc-400">{subtitle}</p></div>
+        {onNew ? <button onClick={onNew} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#ffcc00] px-4 py-3 text-sm font-black text-zinc-950 shadow-lg shadow-yellow-500/20"><Plus className="h-4 w-4" />{newLabel ?? "Nuevo"}</button> : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ActionButtons({ onEdit, onDelete, extra }: { onEdit: () => void; onDelete: () => void; extra?: ReactNode }) {
+  return <div className="flex flex-wrap justify-end gap-2">{extra}<button onClick={onEdit} className="inline-flex items-center gap-1 rounded-xl bg-zinc-950 px-3 py-2 text-xs font-bold text-white"><Edit3 className="h-3.5 w-3.5" />Editar</button><button onClick={onDelete} className="inline-flex items-center gap-1 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700"><Trash2 className="h-3.5 w-3.5" />Eliminar</button></div>;
 }
 
 function DataTable({ title, rows, columns, action }: { title: string; rows: AnyRow[]; columns: string[]; action?: (row: AnyRow) => ReactNode }) {
@@ -351,21 +400,52 @@ function DataTable({ title, rows, columns, action }: { title: string; rows: AnyR
       <div className="mb-4 flex items-center justify-between gap-3"><h2 className="min-w-0 truncate text-lg font-black">{title}</h2><span className="shrink-0 rounded-full bg-[#ffcc00] px-3 py-1 text-xs font-black text-zinc-950">{rows.length} registros</span></div>
       <div className="space-y-3 md:hidden">
         {rows.length === 0 ? <p className="rounded-2xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-500">No hay registros para mostrar.</p> : null}
-        {rows.map((row) => (
-          <article key={row.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-            <div className="grid gap-2">
-              {columns.slice(0, 6).map((column) => <div key={column} className="flex items-start justify-between gap-3 border-b border-zinc-200/70 pb-2 last:border-0 last:pb-0"><span className="text-[11px] font-black uppercase tracking-wide text-zinc-500">{column.replaceAll("_", " ")}</span><span className="max-w-[55%] text-right text-sm font-semibold text-zinc-900">{formatCell(column, row[column])}</span></div>)}
-            </div>
-            {action ? <div className="mt-4 flex justify-end">{action(row)}</div> : null}
-          </article>
-        ))}
+        {rows.map((row) => <article key={row.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><div className="grid gap-2">{columns.slice(0, 6).map((column) => <div key={column} className="flex items-start justify-between gap-3 border-b border-zinc-200/70 pb-2 last:border-0 last:pb-0"><span className="text-[11px] font-black uppercase tracking-wide text-zinc-500">{labels[column] ?? column}</span><span className="max-w-[55%] text-right text-sm font-semibold text-zinc-900">{formatCell(column, row[column])}</span></div>)}</div>{action ? <div className="mt-4 flex justify-end">{action(row)}</div> : null}</article>)}
       </div>
       <div className="hidden overflow-x-auto rounded-2xl border border-zinc-100 md:block">
         <table className="w-full min-w-[760px] text-left text-sm">
-          <thead><tr className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">{columns.map((column) => <th key={column} className="px-3 py-3">{column.replaceAll("_", " ")}</th>)}{action ? <th className="px-3 py-3">Acción</th> : null}</tr></thead>
+          <thead><tr className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">{columns.map((column) => <th key={column} className="px-3 py-3">{labels[column] ?? column}</th>)}{action ? <th className="px-3 py-3 text-right">Acciones</th> : null}</tr></thead>
           <tbody>{rows.map((row) => <tr key={row.id} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/70">{columns.map((column) => <td key={column} className="px-3 py-3">{formatCell(column, row[column])}</td>)}{action ? <td className="px-3 py-3">{action(row)}</td> : null}</tr>)}</tbody>
         </table>
       </div>
     </div>
   );
+}
+
+function Modal({ open, title, subtitle, children, onClose }: { open: boolean; title: string; subtitle?: string; children: ReactNode; onClose: () => void }) {
+  if (!open) return null;
+  return <div className="fixed inset-0 z-50 grid place-items-end bg-zinc-950/60 p-0 backdrop-blur-sm sm:place-items-center sm:p-4"><div className="max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-3xl"><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black">{title}</h2>{subtitle ? <p className="mt-1 text-sm text-zinc-500">{subtitle}</p> : null}</div><button onClick={onClose} className="rounded-2xl bg-zinc-100 p-2 text-zinc-600"><X className="h-5 w-5" /></button></div>{children}</div></div>;
+}
+
+function MemberModal({ open, editing, form, branches, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return <Modal open={open} title={editing ? "Editar socio" : "Nuevo socio"} subtitle="Datos personales, contacto de emergencia y objetivo físico." onClose={onClose}><form onSubmit={onSubmit} className="space-y-4"><div className="grid gap-3 sm:grid-cols-2">{["first_name:Nombres", "last_name:Apellidos", "document_number:Documento", "phone:Teléfono", "email:Correo", "birthdate:Fecha de nacimiento", "emergency_contact_name:Contacto de emergencia", "emergency_contact_phone:Teléfono emergencia"].map((item) => { const [field, label] = item.split(":"); return <label key={field} className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">{label}<input required={["first_name", "last_name", "document_number", "phone"].includes(field)} type={field === "birthdate" ? "date" : "text"} value={form[field] ?? ""} onChange={(event) => onChange({ ...form, [field]: event.target.value })} className={fieldClass()} /></label>; })}<label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Sede<select value={form.branch_id ?? ""} onChange={(event) => onChange({ ...form, branch_id: event.target.value })} className={fieldClass()}><option value="">Seleccione</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>{editing ? <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado<select value={form.status ?? "active"} onChange={(event) => onChange({ ...form, status: event.target.value })} className={fieldClass()}><option value="active">Activo</option><option value="inactive">Inactivo</option><option value="blocked">Bloqueado</option></select></label> : null}</div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Objetivo físico<input value={form.fitness_goal ?? ""} onChange={(event) => onChange({ ...form, fitness_goal: event.target.value })} className={fieldClass()} /></label><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Observaciones médicas<textarea value={form.medical_notes ?? ""} onChange={(event) => onChange({ ...form, medical_notes: event.target.value })} className={fieldClass("min-h-24")} /></label><FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Crear socio"} /></form></Modal>;
+}
+
+function PlanModal({ open, editing, form, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return <Modal open={open} title={editing ? "Editar plan" : "Nuevo plan"} subtitle="Configura precio, vigencia, acceso y beneficios." onClose={onClose}><form onSubmit={onSubmit} className="space-y-4"><div className="grid gap-3 sm:grid-cols-2"><Field label="Nombre" value={form.name} onChange={(value) => onChange({ ...form, name: value })} required /><Field label="Código" value={form.code} onChange={(value) => onChange({ ...form, code: value })} required /><Field label="Precio" type="number" value={form.price} onChange={(value) => onChange({ ...form, price: value })} required /><Field label="Duración en días" type="number" value={form.duration_days} onChange={(value) => onChange({ ...form, duration_days: value })} required /><Field label="Días de gracia" type="number" value={form.grace_days} onChange={(value) => onChange({ ...form, grace_days: value })} required /><Field label="Accesos diarios" type="number" value={form.daily_access_limit} onChange={(value) => onChange({ ...form, daily_access_limit: value })} /></div><div className="grid gap-3 rounded-2xl bg-zinc-50 p-4 text-sm font-bold"><label className="flex items-center gap-2"><input type="checkbox" checked={form.includes_classes} onChange={(event) => onChange({ ...form, includes_classes: event.target.checked })} /> Incluye clases grupales</label><label className="flex items-center gap-2"><input type="checkbox" checked={form.includes_trainer} onChange={(event) => onChange({ ...form, includes_trainer: event.target.checked })} /> Incluye entrenador</label><label className="flex items-center gap-2"><input type="checkbox" checked={form.is_active} onChange={(event) => onChange({ ...form, is_active: event.target.checked })} /> Activo para ventas</label></div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Descripción<textarea value={form.description ?? ""} onChange={(event) => onChange({ ...form, description: event.target.value })} className={fieldClass("min-h-24")} /></label><FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Crear plan"} /></form></Modal>;
+}
+
+function SaleModal({ open, form, members, plans, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; plans: AnyRow[]; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return <Modal open={open} title="Nueva venta" subtitle="Activa una membresía y registra el pago." onClose={onClose}><form onSubmit={onSubmit} className="space-y-3"><select required value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione socio</option>{members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}</select><select required value={form.plan_id} onChange={(event) => onChange({ ...form, plan_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione plan</option>{plans.filter((plan) => plan.is_active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {money(plan.price)}</option>)}</select><div className="grid gap-3 sm:grid-cols-2"><input type="date" value={form.starts_on} onChange={(event) => onChange({ ...form, starts_on: event.target.value })} className={fieldClass()} /><input value={form.discount} onChange={(event) => onChange({ ...form, discount: event.target.value })} placeholder="Descuento" className={fieldClass()} /></div><select value={form.method} onChange={(event) => onChange({ ...form, method: event.target.value })} className={fieldClass("w-full")}><option value="cash">Efectivo</option><option value="card">Tarjeta</option><option value="transfer">Transferencia</option><option value="yape">Yape</option><option value="plin">Plin</option></select><FormActions onClose={onClose} submitLabel="Cobrar y activar" /></form></Modal>;
+}
+
+function ExpenseModal({ open, form, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return <Modal open={open} title="Registrar gasto" subtitle="Controla egresos operativos del gimnasio." onClose={onClose}><form onSubmit={onSubmit} className="grid gap-3"><Field label="Categoría" value={form.category} onChange={(value) => onChange({ ...form, category: value })} required /><Field label="Proveedor" value={form.supplier} onChange={(value) => onChange({ ...form, supplier: value })} /><Field label="Monto" type="number" value={form.amount} onChange={(value) => onChange({ ...form, amount: value })} required /><Field label="Fecha" type="date" value={form.spent_on} onChange={(value) => onChange({ ...form, spent_on: value })} required /><Field label="Medio de pago" value={form.payment_method} onChange={(value) => onChange({ ...form, payment_method: value })} required /><Field label="Descripción" value={form.description} onChange={(value) => onChange({ ...form, description: value })} /><FormActions onClose={onClose} submitLabel="Guardar gasto" /></form></Modal>;
+}
+
+function Field({ label, value, onChange, type = "text", required }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean }) {
+  return <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">{label}<input type={type} required={required} value={value ?? ""} onChange={(event) => onChange(event.target.value)} className={fieldClass()} /></label>;
+}
+
+function FormActions({ onClose, submitLabel }: { onClose: () => void; submitLabel: string }) {
+  return <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end"><button type="button" onClick={onClose} className="rounded-2xl border border-zinc-200 px-5 py-3 text-sm font-black">Cancelar</button><button className="rounded-2xl bg-[#ffcc00] px-5 py-3 text-sm font-black text-zinc-950">{submitLabel}</button></div>;
+}
+
+function ConfirmModal({ state, onClose }: { state: ConfirmState; onClose: () => void }) {
+  if (!state) return null;
+  return <Modal open title={state.title} subtitle={state.body} onClose={onClose}><div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button onClick={onClose} className="rounded-2xl border border-zinc-200 px-5 py-3 text-sm font-black">Cancelar</button><button onClick={() => void state.onConfirm().finally(onClose)} className="rounded-2xl bg-red-600 px-5 py-3 text-sm font-black text-white">Confirmar</button></div></Modal>;
+}
+
+function BottomNav({ tab, onSelect }: { tab: Tab; onSelect: (tab: Tab) => void }) {
+  return <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/95 px-2 py-2 shadow-[0_-10px_30px_rgba(0,0,0,0.08)] backdrop-blur-xl lg:hidden"><div className="mx-auto grid max-w-md grid-cols-4 gap-1">{tabs.slice(0, 4).map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => onSelect(item.id)} className={`rounded-2xl px-2 py-2 text-[10px] font-black ${tab === item.id ? "bg-[#ffcc00] text-zinc-950" : "text-zinc-500"}`}><Icon className="mx-auto mb-1 h-5 w-5" />{item.label}</button>; })}</div></nav>;
 }

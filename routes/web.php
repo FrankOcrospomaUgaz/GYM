@@ -24,6 +24,7 @@ Route::middleware('auth')->group(function (): void {
         Route::get('members', [GymController::class, 'members']);
         Route::post('members', [GymController::class, 'storeMember']);
         Route::put('members/{member}', [GymController::class, 'updateMember']);
+        Route::delete('members/{member}', [GymController::class, 'destroyMember']);
         Route::get('memberships', [GymController::class, 'memberships']);
         Route::post('memberships', [GymController::class, 'sellMembership']);
         Route::get('payments', [GymController::class, 'payments']);
