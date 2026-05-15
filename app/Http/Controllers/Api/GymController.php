@@ -481,7 +481,7 @@ class GymController extends Controller
             'starts_on' => ['required', 'date'],
             'discount' => ['nullable', 'numeric', 'min:0'],
             'method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
-            'proof_photo' => ['nullable', 'image', 'max:4096'],
+            'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
             'notes' => ['nullable', 'string'],
         ]);
 
@@ -800,7 +800,7 @@ class GymController extends Controller
             'sessions_per_week' => ['required', 'integer', 'min:1', 'max:7'],
             'day_schedules' => ['required', 'json'],
             'payment_method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
-            'proof_photo' => ['nullable', 'image', 'max:4096'],
+            'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
             'status' => ['nullable', Rule::in(['active', 'inactive', 'cancelled', 'expired'])],
             'notes' => ['nullable', 'string'],
         ]);
@@ -998,7 +998,7 @@ class GymController extends Controller
                 'amount' => ['required', 'numeric', 'min:0.01'],
                 'spent_on' => ['required', 'date'],
                 'payment_method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
-                'proof_photo' => ['nullable', 'image', 'max:4096'],
+                'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
                 'description' => ['nullable', 'string'],
             ]);
             $data['tenant_id'] = $this->defaultTenantId($request);

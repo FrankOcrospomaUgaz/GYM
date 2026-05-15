@@ -234,6 +234,40 @@ function formatDateTime(value: unknown) {
   });
 }
 
+async function normalizeProofPhoto(file: File) {
+  if (!file.type.startsWith("image/")) return file;
+
+  try {
+    const bitmap = await createImageBitmap(file);
+    const maxSide = 1600;
+    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return file;
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
+    if (!blob) return file;
+
+    const baseName = file.name.replace(/\.[^.]+$/, "") || "comprobante";
+    return new File([blob], `${baseName}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+  } catch {
+    return file;
+  }
+}
+
+async function appendFormValue(formData: FormData, key: string, value: unknown) {
+  if (value === null || value === undefined || value === "") return;
+  if (key === "proof_photo" && value instanceof File) {
+    formData.append(key, await normalizeProofPhoto(value));
+    return;
+  }
+  formData.append(key, value as string | Blob);
+}
+
 function nextDateForWeekday(weekday: string) {
   const weekdays = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
   const target = weekdays.indexOf(weekday);
@@ -577,9 +611,7 @@ export function GymPage() {
     event.preventDefault();
     setMessage("");
     const formData = new FormData();
-    Object.entries(saleForm).forEach(([key, value]) => {
-      if (value !== null && value !== undefined && value !== "") formData.append(key, value as string | Blob);
-    });
+    for (const [key, value] of Object.entries(saleForm)) await appendFormValue(formData, key, value);
     await httpClient.post("/api/gym/memberships", formData);
     setSaleModalOpen(false);
     if (memberMembershipModalOpen && selectedMember) {
@@ -600,9 +632,7 @@ export function GymPage() {
   async function saveExpense(event: FormEvent) {
     event.preventDefault();
     const formData = new FormData();
-    Object.entries(expenseForm).forEach(([key, value]) => {
-      if (value !== null && value !== undefined && value !== "") formData.append(key, value as string | Blob);
-    });
+    for (const [key, value] of Object.entries(expenseForm)) await appendFormValue(formData, key, value);
     await httpClient.post("/api/gym/expenses", formData);
     setExpenseForm({ category: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", proof_photo: null, description: "" });
     setExpenseModalOpen(false);
@@ -752,15 +782,16 @@ export function GymPage() {
     setTrainingSubscriptionSaving(true);
     const formData = new FormData();
     try {
-      Object.entries(trainingSubscriptionForm).forEach(([key, value]) => {
+      for (const [key, value] of Object.entries(trainingSubscriptionForm)) {
+        if (key === "proof_url" || key.startsWith("payment_")) continue;
         if (key === "selected_days" && Array.isArray(value)) {
           value.forEach((day) => formData.append("selected_days[]", day));
         } else if (key === "day_schedules") {
           formData.append("day_schedules", JSON.stringify(value ?? {}));
-        } else if (value !== null && value !== undefined && value !== "") {
-          formData.append(key, value as string | Blob);
+        } else {
+          await appendFormValue(formData, key, value);
         }
-      });
+      }
       if (editingTrainingSubscriptionId) {
         formData.append("_method", "PUT");
         await httpClient.post(`/api/gym/training-subscriptions/${editingTrainingSubscriptionId}`, formData);
