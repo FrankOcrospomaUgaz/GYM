@@ -783,7 +783,7 @@ export function GymPage() {
     const formData = new FormData();
     try {
       for (const [key, value] of Object.entries(trainingSubscriptionForm)) {
-        if (key === "proof_url" || key.startsWith("payment_")) continue;
+        if (key === "proof_url" || (key.startsWith("payment_") && key !== "payment_method")) continue;
         if (key === "selected_days" && Array.isArray(value)) {
           value.forEach((day) => formData.append("selected_days[]", day));
         } else if (key === "day_schedules") {
@@ -1448,6 +1448,19 @@ function RequiredLabel({ children, required = true }: { children: ReactNode; req
 }
 
 function PaymentFields({ method, file, existingProofUrl, onMethodChange, onFileChange }: { method: string; file: File | null; existingProofUrl?: string; onMethodChange: (value: string) => void; onFileChange: (file: File | null) => void }) {
+  const [previewUrl, setPreviewUrl] = useState("");
+
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl(existingProofUrl ?? "");
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    setPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [file, existingProofUrl]);
+
   return (
     <div className="grid gap-3">
       <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
@@ -1466,6 +1479,11 @@ function PaymentFields({ method, file, existingProofUrl, onMethodChange, onFileC
           <input type="file" accept="image/*" onChange={(event) => onFileChange(event.target.files?.[0] ?? null)} className={fieldClass("w-full file:mr-3 file:rounded-xl file:border-0 file:bg-zinc-950 file:px-3 file:py-2 file:text-xs file:font-black file:text-white")} />
           {file ? <span className="text-xs font-semibold normal-case tracking-normal text-zinc-500">{file.name}</span> : null}
           {!file && existingProofUrl ? <a href={existingProofUrl} target="_blank" rel="noreferrer" className="inline-flex w-fit rounded-xl bg-blue-50 px-3 py-2 text-xs font-black normal-case tracking-normal text-blue-700">Ver comprobante actual</a> : null}
+          {previewUrl ? (
+            <div className="mt-2 overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-50 p-2">
+              <img src={previewUrl} alt="Previsualización del comprobante" className="max-h-64 w-full rounded-xl object-contain" />
+            </div>
+          ) : null}
         </label>
       ) : null}
     </div>

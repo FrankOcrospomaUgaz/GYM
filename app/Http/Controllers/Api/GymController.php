@@ -790,6 +790,10 @@ class GymController extends Controller
 
     private function validatedTrainingSubscription(Request $request): array
     {
+        if (! $request->has('payment_method') && $request->has('method')) {
+            $request->merge(['payment_method' => $request->input('method')]);
+        }
+
         $data = $request->validate([
             'member_id' => ['required', 'exists:gym_members,id'],
             'discipline' => ['required', 'string', 'max:120'],
