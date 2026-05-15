@@ -493,6 +493,64 @@ class GymController extends Controller
             ->get());
     }
 
+    public function trainingSubscriptions(): JsonResponse
+    {
+        return response()->json(DB::table('gym_training_subscriptions')
+            ->join('gym_members', 'gym_members.id', '=', 'gym_training_subscriptions.member_id')
+            ->select('gym_training_subscriptions.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_members.dni')
+            ->orderByDesc('gym_training_subscriptions.id')
+            ->limit(100)
+            ->get()
+            ->map(function ($subscription) {
+                $subscription->selected_days = json_decode((string) $subscription->selected_days, true) ?: [];
+                $subscription->proof_url = $subscription->proof_path ? Storage::disk('public')->url($subscription->proof_path) : null;
+
+                return $subscription;
+            }));
+    }
+
+    public function storeTrainingSubscription(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'member_id' => ['required', 'exists:gym_members,id'],
+            'discipline' => ['required', 'string', 'max:120'],
+            'monthly_fee' => ['required', 'numeric', 'min:0.01'],
+            'starts_on' => ['required', 'date'],
+            'selected_days' => ['required', 'array', 'min:1'],
+            'selected_days.*' => ['required', Rule::in(['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'])],
+            'preferred_time' => ['required', 'date_format:H:i'],
+            'sessions_per_week' => ['required', 'integer', 'min:1', 'max:7'],
+            'payment_method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+            'proof_photo' => ['nullable', 'image', 'max:4096'],
+            'notes' => ['nullable', 'string'],
+        ]);
+
+        $starts = Carbon::parse($data['starts_on']);
+        $proofPath = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
+            ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public')
+            : null;
+
+        $id = DB::table('gym_training_subscriptions')->insertGetId([
+            'member_id' => $data['member_id'],
+            'discipline' => $data['discipline'],
+            'monthly_fee' => $data['monthly_fee'],
+            'starts_on' => $starts->toDateString(),
+            'ends_on' => $starts->copy()->addMonthNoOverflow()->subDay()->toDateString(),
+            'selected_days' => json_encode(array_values($data['selected_days'])),
+            'preferred_time' => $data['preferred_time'],
+            'sessions_per_week' => $data['sessions_per_week'],
+            'payment_method' => $data['payment_method'],
+            'proof_path' => $proofPath,
+            'status' => 'active',
+            'notes' => $data['notes'] ?? null,
+            'registered_by' => $request->user()?->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return response()->json(DB::table('gym_training_subscriptions')->find($id), 201);
+    }
+
     public function storeClass(Request $request): JsonResponse
     {
         $data = $this->validateClass($request);

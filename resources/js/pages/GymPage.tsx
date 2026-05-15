@@ -66,6 +66,19 @@ const emptyClassForm = {
   is_active: true,
 };
 
+const emptyTrainingSubscriptionForm = {
+  member_id: "",
+  discipline: "MMA",
+  monthly_fee: "180",
+  starts_on: new Date().toISOString().slice(0, 10),
+  selected_days: [] as string[],
+  preferred_time: "19:00",
+  sessions_per_week: "3",
+  payment_method: "cash",
+  proof_photo: null,
+  notes: "",
+};
+
 const labels: Record<string, string> = {
   member_code: "Código",
   dni: "DNI",
@@ -94,6 +107,11 @@ const labels: Record<string, string> = {
   method: "Medio",
   paid_on: "Fecha",
   proof_url: "Foto",
+  discipline: "Disciplina",
+  monthly_fee: "Mensualidad",
+  selected_days: "Días",
+  preferred_time: "Hora",
+  payment_method: "Pago",
   checked_in_at: "Entrada",
   checked_out_at: "Salida",
   result: "Resultado",
@@ -127,6 +145,8 @@ function formatCell(column: string, value: unknown) {
   if (column.includes("amount") || column === "price" || column === "discount") return money(value);
   if (column === "duration_days") return `${value ?? 0} días`;
   if (column === "grace_days") return `${value ?? 0} días`;
+  if (column === "monthly_fee") return money(value);
+  if (column === "selected_days" && Array.isArray(value)) return value.join(", ");
   if (typeof value === "boolean" || value === 0 || value === 1) return Boolean(value) ? "Sí" : "No";
   if (column === "status") return ({ active: "Activo", inactive: "Inactivo", blocked: "Bloqueado", paid: "Pagado" } as Record<string, string>)[String(value)] ?? String(value ?? "-");
   return String(value ?? "-");
@@ -140,6 +160,26 @@ function nextDateForWeekday(weekday: string) {
   const date = new Date(today);
   date.setDate(today.getDate() + diff);
   return date.toISOString().slice(0, 10);
+}
+
+function buildMonthDays(baseDate: Date) {
+  const weekdays = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+  const first = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+  const last = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0);
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const days = [];
+  for (let day = 1; day <= last.getDate(); day++) {
+    const date = new Date(first.getFullYear(), first.getMonth(), day);
+    const iso = date.toISOString().slice(0, 10);
+    days.push({
+      iso,
+      day,
+      weekday: weekdays[date.getDay()],
+      weekdayShort: weekdays[date.getDay()].slice(0, 3),
+      isToday: iso === todayIso,
+    });
+  }
+  return days;
 }
 
 export function GymPage() {
@@ -156,6 +196,7 @@ export function GymPage() {
   const [payments, setPayments] = useState<AnyRow[]>([]);
   const [attendance, setAttendance] = useState<AnyRow[]>([]);
   const [classes, setClasses] = useState<AnyRow[]>([]);
+  const [trainingSubscriptions, setTrainingSubscriptions] = useState<AnyRow[]>([]);
   const [equipment, setEquipment] = useState<AnyRow[]>([]);
   const [notifications, setNotifications] = useState<AnyRow[]>([]);
   const [memberForm, setMemberForm] = useState<AnyRow>(emptyMember);
@@ -169,6 +210,8 @@ export function GymPage() {
   const [classBookings, setClassBookings] = useState<AnyRow[]>([]);
   const [classBookingDate, setClassBookingDate] = useState(new Date().toISOString().slice(0, 10));
   const [classBookingMemberId, setClassBookingMemberId] = useState("");
+  const [trainingSubscriptionForm, setTrainingSubscriptionForm] = useState<AnyRow>(emptyTrainingSubscriptionForm);
+  const [trainingSubscriptionModalOpen, setTrainingSubscriptionModalOpen] = useState(false);
   const [editingClassId, setEditingClassId] = useState<number | null>(null);
   const [editingMemberId, setEditingMemberId] = useState<number | null>(null);
   const [editingPlanId, setEditingPlanId] = useState<number | null>(null);
@@ -191,7 +234,7 @@ export function GymPage() {
   }
 
   async function loadAll() {
-    const [dash, branchRes, goalRes, planRes, memberRes, membershipRes, paymentRes, attendanceRes, classRes, equipmentRes, notificationRes] = await Promise.all([
+    const [dash, branchRes, goalRes, planRes, memberRes, membershipRes, paymentRes, attendanceRes, classRes, trainingRes, equipmentRes, notificationRes] = await Promise.all([
       httpClient.get("/api/gym/dashboard"),
       httpClient.get("/api/gym/branches"),
       httpClient.get("/api/gym/fitness-goals"),
@@ -201,6 +244,7 @@ export function GymPage() {
       httpClient.get("/api/gym/payments"),
       httpClient.get("/api/gym/attendance"),
       httpClient.get("/api/gym/classes"),
+      httpClient.get("/api/gym/training-subscriptions"),
       httpClient.get("/api/gym/equipment"),
       httpClient.get("/api/gym/notifications"),
     ]);
@@ -213,6 +257,7 @@ export function GymPage() {
     setPayments(paymentRes.data);
     setAttendance(attendanceRes.data);
     setClasses(classRes.data);
+    setTrainingSubscriptions(trainingRes.data);
     setEquipment(equipmentRes.data);
     setNotifications(notificationRes.data);
   }
@@ -486,6 +531,27 @@ export function GymPage() {
     await reloadClassBookings();
   }
 
+  function openTrainingSubscription() {
+    setTrainingSubscriptionForm(emptyTrainingSubscriptionForm);
+    setTrainingSubscriptionModalOpen(true);
+  }
+
+  async function saveTrainingSubscription(event: FormEvent) {
+    event.preventDefault();
+    const formData = new FormData();
+    Object.entries(trainingSubscriptionForm).forEach(([key, value]) => {
+      if (key === "selected_days" && Array.isArray(value)) {
+        value.forEach((day) => formData.append("selected_days[]", day));
+      } else if (value !== null && value !== undefined && value !== "") {
+        formData.append(key, value as string | Blob);
+      }
+    });
+    await httpClient.post("/api/gym/training-subscriptions", formData);
+    setTrainingSubscriptionModalOpen(false);
+    setMessage("Mensualidad de clases registrada correctamente.");
+    await loadAll();
+  }
+
   return (
     <div className="min-h-screen bg-[#f5f5ef] pb-20 text-zinc-950 lg:pb-0">
       {mobileMenuOpen ? <button aria-label="Cerrar menú" className="fixed inset-0 z-30 bg-zinc-950/55 backdrop-blur-sm lg:hidden" onClick={() => setMobileMenuOpen(false)} /> : null}
@@ -534,7 +600,7 @@ export function GymPage() {
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
           {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "result", "notes"]} /></Module> : null}
-          {tab === "classes" ? <ClassesModule classes={classes} onNew={openNewClass} onEdit={openEditClass} onDelete={confirmDeleteClass} onOpenDetail={(gymClass) => void openClassDetail(gymClass)} /> : null}
+          {tab === "classes" ? <ClassesModule classes={classes} subscriptions={trainingSubscriptions} onNew={openNewClass} onNewSubscription={openTrainingSubscription} onEdit={openEditClass} onDelete={confirmDeleteClass} onOpenDetail={(gymClass) => void openClassDetail(gymClass)} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos."><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} /></Module> : null}
           {tab === "finance" ? <Module title="Caja" subtitle="Pagos recibidos y gastos operativos." onNew={() => setExpenseModalOpen(true)} newLabel="Registrar gasto"><DataTable title="Pagos recibidos" rows={payments} columns={["receipt_number", "member_name", "amount", "method", "paid_on", "proof_url", "status"]} /></Module> : null}
         </section>
@@ -548,6 +614,7 @@ export function GymPage() {
       <ExpenseModal open={expenseModalOpen} form={expenseForm} onChange={setExpenseForm} onClose={() => setExpenseModalOpen(false)} onSubmit={saveExpense} />
       <ClassModal open={classModalOpen} editing={Boolean(editingClassId)} form={classForm} branches={branches} onChange={setClassForm} onClose={() => setClassModalOpen(false)} onSubmit={saveClass} />
       <ClassDetailModal open={classDetailOpen} gymClass={selectedClass} members={members} rows={classBookings} bookingDate={classBookingDate} selectedMemberId={classBookingMemberId} onDateChange={(date) => { setClassBookingDate(date); void reloadClassBookings(date); }} onMemberChange={setClassBookingMemberId} onReserve={reserveClass} onCheckIn={checkInClassBooking} onCancel={cancelClassBooking} onClose={() => setClassDetailOpen(false)} />
+      <TrainingSubscriptionModal open={trainingSubscriptionModalOpen} form={trainingSubscriptionForm} members={members} onChange={setTrainingSubscriptionForm} onClose={() => setTrainingSubscriptionModalOpen(false)} onSubmit={saveTrainingSubscription} />
       <ConfirmModal state={confirm} onClose={() => setConfirm(null)} />
     </div>
   );
@@ -581,9 +648,11 @@ function Module({ title, subtitle, children, onNew, newLabel }: { title: string;
   );
 }
 
-function ClassesModule({ classes, onNew, onEdit, onDelete, onOpenDetail }: { classes: AnyRow[]; onNew: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void; onOpenDetail: (row: AnyRow) => void }) {
+function ClassesModule({ classes, subscriptions, onNew, onNewSubscription, onEdit, onDelete, onOpenDetail }: { classes: AnyRow[]; subscriptions: AnyRow[]; onNew: () => void; onNewSubscription: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void; onOpenDetail: (row: AnyRow) => void }) {
   const weekdays = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
   const activeClasses = classes.filter((item) => item.is_active);
+  const [viewMode, setViewMode] = useState<"mes" | "semana" | "tabla" | "mensualidades">("mes");
+  const monthDays = buildMonthDays(new Date());
 
   return (
     <div className="space-y-4">
@@ -594,7 +663,13 @@ function ClassesModule({ classes, onNew, onEdit, onDelete, onOpenDetail }: { cla
             <h2 className="text-3xl font-black">Clases, sparring y academias</h2>
             <p className="mt-2 max-w-2xl text-sm text-zinc-400">Organiza horarios recurrentes, cupos, niveles, reservas y asistencia. Sirve para gimnasio, MMA, box, BJJ, funcional o entrenadores independientes.</p>
           </div>
-          <button onClick={onNew} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#ffcc00] px-4 py-3 text-sm font-black text-zinc-950"><Plus className="h-4 w-4" />Nueva clase</button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button onClick={onNewSubscription} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-black text-zinc-950"><Plus className="h-4 w-4" />Mensualidad</button>
+            <button onClick={onNew} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#ffcc00] px-4 py-3 text-sm font-black text-zinc-950"><Plus className="h-4 w-4" />Nueva clase</button>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 border-t border-white/10 px-5 py-4">
+          {(["mes", "semana", "tabla", "mensualidades"] as const).map((mode) => <button key={mode} onClick={() => setViewMode(mode)} className={`rounded-2xl px-4 py-2 text-sm font-black ${viewMode === mode ? "bg-[#ffcc00] text-zinc-950" : "bg-white/10 text-zinc-300"}`}>{mode === "mes" ? "Calendario mensual" : mode === "semana" ? "Semana" : mode === "tabla" ? "Tabla" : "Mensualidades"}</button>)}
         </div>
         <div className="grid grid-cols-2 gap-3 border-t border-white/10 p-5 sm:grid-cols-4">
           <MetricCard title="Clases activas" value={activeClasses.length} yellow />
@@ -604,7 +679,22 @@ function ClassesModule({ classes, onNew, onEdit, onDelete, onOpenDetail }: { cla
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-7">
+      {viewMode === "mes" ? (
+        <div className={cardClass()}>
+          <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div><h3 className="text-xl font-black">Calendario mensual</h3><p className="text-sm font-semibold text-zinc-500">Cada clase semanal aparece en sus fechas del mes actual.</p></div>
+            <span className="rounded-full bg-[#ffcc00] px-3 py-1 text-xs font-black text-zinc-950">{new Date().toLocaleDateString("es-PE", { month: "long", year: "numeric" })}</span>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7">
+            {monthDays.map((day) => {
+              const dayClasses = activeClasses.filter((item) => item.weekday === day.weekday);
+              return <div key={day.iso} className={`min-h-36 rounded-2xl border p-3 ${day.isToday ? "border-[#ffcc00] bg-yellow-50" : "border-zinc-200 bg-zinc-50"}`}><div className="mb-2 flex items-center justify-between"><span className="text-xs font-black uppercase text-zinc-500">{day.weekdayShort}</span><span className="text-lg font-black">{day.day}</span></div><div className="space-y-2">{dayClasses.slice(0, 4).map((gymClass) => <button key={gymClass.id} onClick={() => onOpenDetail(gymClass)} className="block w-full rounded-xl border border-white bg-white p-2 text-left shadow-sm"><span className="block truncate text-xs font-black" style={{ color: gymClass.color }}>{String(gymClass.starts_at).slice(0, 5)} · {gymClass.name}</span><span className="block truncate text-[11px] text-zinc-500">{gymClass.category} · {gymClass.room}</span></button>)}</div></div>;
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {viewMode === "semana" ? <div className="grid gap-4 xl:grid-cols-7">
         {weekdays.map((day) => {
           const dayClasses = activeClasses.filter((item) => item.weekday === day).sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
           return (
@@ -640,9 +730,10 @@ function ClassesModule({ classes, onNew, onEdit, onDelete, onOpenDetail }: { cla
             </section>
           );
         })}
-      </div>
+      </div> : null}
 
-      <DataTable title="Listado completo de clases" rows={classes} columns={["name", "category", "level", "weekday", "starts_at", "ends_at", "capacity", "room", "trainer_name", "is_active"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} extra={<button onClick={() => onOpenDetail(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Control</button>} />} />
+      {viewMode === "tabla" ? <DataTable title="Listado completo de clases" rows={classes} columns={["name", "category", "level", "weekday", "starts_at", "ends_at", "capacity", "room", "trainer_name", "is_active"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} extra={<button onClick={() => onOpenDetail(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Control</button>} />} /> : null}
+      {viewMode === "mensualidades" ? <DataTable title="Mensualidades de entrenamiento" rows={subscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "selected_days", "preferred_time", "payment_method", "status"]} /> : null}
     </div>
   );
 }
@@ -794,6 +885,42 @@ function ClassDetailModal({ open, gymClass, members, rows, bookingDate, selected
         </form>
         <DataTable title="Reservas de la fecha" rows={rows} columns={["member_name", "dni", "status", "checked_in_at", "notes"]} action={(row) => <div className="flex flex-wrap justify-end gap-2"><button onClick={() => void onCheckIn(row)} className="rounded-xl bg-zinc-950 px-3 py-2 text-xs font-bold text-white">Asistió</button><button onClick={() => void onCancel(row)} className="rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700">Cancelar</button></div>} />
       </div>
+    </Modal>
+  );
+}
+
+function TrainingSubscriptionModal({ open, form, members, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  const weekdays = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+  const selectedDays: string[] = form.selected_days ?? [];
+
+  function toggleDay(day: string) {
+    onChange({
+      ...form,
+      selected_days: selectedDays.includes(day) ? selectedDays.filter((item) => item !== day) : [...selectedDays, day],
+    });
+  }
+
+  return (
+    <Modal open={open} title="Mensualidad de clases" subtitle="El socio paga mensual y define qué días y a qué hora entrena." onClose={onClose}>
+      <form onSubmit={onSubmit} className="space-y-4">
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><select required value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass()}><option value="">Seleccione socio</option>{members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}</select></label>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Disciplina" value={form.discipline} onChange={(value) => onChange({ ...form, discipline: value })} required />
+          <Field label="Mensualidad" type="number" value={form.monthly_fee} onChange={(value) => onChange({ ...form, monthly_fee: value })} required />
+          <Field label="Inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required />
+          <Field label="Hora de entrenamiento" type="time" value={form.preferred_time} onChange={(value) => onChange({ ...form, preferred_time: value })} required />
+          <Field label="Sesiones por semana" type="number" value={form.sessions_per_week} onChange={(value) => onChange({ ...form, sessions_per_week: value })} required />
+        </div>
+        <div>
+          <p className="mb-2 text-xs font-black uppercase tracking-wide text-zinc-500">Días de entrenamiento <span className="text-red-600">*</span></p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {weekdays.map((day) => <button key={day} type="button" onClick={() => toggleDay(day)} className={`rounded-2xl border px-3 py-2 text-sm font-black ${selectedDays.includes(day) ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>{day}</button>)}
+          </div>
+        </div>
+        <PaymentFields method={form.payment_method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, payment_method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
+        <FormActions onClose={onClose} submitLabel="Registrar mensualidad" />
+      </form>
     </Modal>
   );
 }
