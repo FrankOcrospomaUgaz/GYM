@@ -244,6 +244,33 @@ function buildMonthDays(baseDate: Date) {
   return days;
 }
 
+const weeklyStartHour = 7;
+const weeklyEndHour = 22;
+const weeklyHourHeight = 76;
+
+function timeToMinutes(value: unknown) {
+  const [hour = 0, minute = 0] = String(value ?? "00:00").slice(0, 5).split(":").map((part) => Number(part));
+  return (Number.isFinite(hour) ? hour : 0) * 60 + (Number.isFinite(minute) ? minute : 0);
+}
+
+function weeklyClassStyle(gymClass: AnyRow, index: number) {
+  const minMinute = weeklyStartHour * 60;
+  const maxMinute = weeklyEndHour * 60;
+  const starts = Math.max(minMinute, Math.min(maxMinute, timeToMinutes(gymClass.starts_at)));
+  const ends = Math.max(starts + 30, Math.min(maxMinute, timeToMinutes(gymClass.ends_at)));
+  const top = ((starts - minMinute) / 60) * weeklyHourHeight;
+  const height = Math.max(58, ((ends - starts) / 60) * weeklyHourHeight);
+  const overlapOffset = (index % 2) * 10;
+
+  return {
+    top,
+    height,
+    left: 8 + overlapOffset,
+    right: 8,
+    borderColor: gymClass.color ?? "#ffcc00",
+  };
+}
+
 export function GymPage() {
   const { user, logout } = useAuth();
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -706,7 +733,7 @@ function Dashboard({ dashboard, activeMembers, memberships, notifications }: { d
 }
 
 function MetricCard({ title, value, yellow, dark }: { title: string; value: ReactNode; yellow?: boolean; dark?: boolean }) {
-  return <div className={`rounded-2xl p-4 ${yellow ? "bg-[#ffcc00]" : dark ? "bg-zinc-950 text-white" : "bg-white ring-1 ring-zinc-200"}`}><p className="text-sm font-bold">{title}</p><p className="text-3xl font-black">{value}</p></div>;
+  return <div className={`rounded-2xl p-4 ${yellow ? "bg-[#ffcc00] text-zinc-950" : dark ? "bg-zinc-950 text-white" : "bg-white text-zinc-950 ring-1 ring-zinc-200"}`}><p className="text-sm font-bold">{title}</p><p className="text-3xl font-black">{value}</p></div>;
 }
 
 function Module({ title, subtitle, children, onNew, newLabel }: { title: string; subtitle: string; children: ReactNode; onNew?: () => void; newLabel?: string }) {
@@ -767,7 +794,9 @@ function ClassesModule({ classes, subscriptions, onNew, onNewSubscription, onEdi
         </div>
       ) : null}
 
-      {viewMode === "semana" ? <div className="grid gap-4 xl:grid-cols-7">
+      {viewMode === "semana" ? <WeeklySchedule classes={activeClasses} weekdays={weekdays} onOpenDetail={onOpenDetail} onEdit={onEdit} /> : null}
+
+      {false && viewMode === "semana" ? <div className="grid gap-4 xl:grid-cols-7">
         {weekdays.map((day) => {
           const dayClasses = activeClasses.filter((item) => item.weekday === day).sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
           return (
@@ -807,6 +836,65 @@ function ClassesModule({ classes, subscriptions, onNew, onNewSubscription, onEdi
 
       {viewMode === "tabla" ? <DataTable title="Listado completo de clases" rows={classes} columns={["name", "category", "level", "weekday", "starts_at", "ends_at", "capacity", "room", "trainer_name", "is_active"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} extra={<button onClick={() => onOpenDetail(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Control</button>} />} /> : null}
       {viewMode === "mensualidades" ? <DataTable title="Mensualidades de entrenamiento" rows={subscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "selected_days", "preferred_time", "payment_method", "status"]} /> : null}
+    </div>
+  );
+}
+
+function WeeklySchedule({ classes, weekdays, onOpenDetail, onEdit }: { classes: AnyRow[]; weekdays: string[]; onOpenDetail: (row: AnyRow) => void; onEdit: (row: AnyRow) => void }) {
+  const height = (weeklyEndHour - weeklyStartHour) * weeklyHourHeight;
+
+  return (
+    <div className={cardClass()}>
+      <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h3 className="text-xl font-black">Calendario semanal por hora</h3>
+          <p className="text-sm font-semibold text-zinc-500">Vista de lunes a domingo, desde las 7:00 a. m. hasta las 10:00 p. m.</p>
+        </div>
+        <span className="rounded-full bg-[#ffcc00] px-3 py-1 text-xs font-black text-zinc-950">7:00 AM - 10:00 PM</span>
+      </div>
+      <div className="overflow-x-auto rounded-3xl border border-zinc-200 bg-white">
+        <div className="min-w-[1180px]">
+          <div className="grid grid-cols-[78px_repeat(7,minmax(145px,1fr))] border-b border-zinc-200 bg-zinc-50">
+            <div className="px-3 py-3 text-xs font-black uppercase tracking-wide text-zinc-400">Hora</div>
+            {weekdays.map((day) => {
+              const total = classes.filter((item) => item.weekday === day).length;
+              return <div key={day} className="border-l border-zinc-200 px-3 py-3"><p className="font-black">{day}</p><p className="text-xs font-bold text-zinc-500">{total} clases</p></div>;
+            })}
+          </div>
+          <div className="grid grid-cols-[78px_repeat(7,minmax(145px,1fr))]">
+            <div className="relative bg-zinc-50" style={{ height }}>
+              {Array.from({ length: weeklyEndHour - weeklyStartHour + 1 }, (_, index) => weeklyStartHour + index).map((hour) => (
+                <div key={hour} className="absolute left-0 right-0 -translate-y-2 px-3 text-[11px] font-black text-zinc-500" style={{ top: (hour - weeklyStartHour) * weeklyHourHeight }}>{hour.toString().padStart(2, "0")}:00</div>
+              ))}
+            </div>
+            {weekdays.map((day) => {
+              const dayClasses = classes.filter((item) => item.weekday === day).sort((a, b) => timeToMinutes(a.starts_at) - timeToMinutes(b.starts_at));
+              return (
+                <section key={day} className="relative border-l border-zinc-200" style={{ height }}>
+                  {Array.from({ length: weeklyEndHour - weeklyStartHour + 1 }, (_, index) => <div key={index} className="absolute left-0 right-0 border-t border-zinc-100" style={{ top: index * weeklyHourHeight }} />)}
+                  {dayClasses.length === 0 ? <div className="absolute inset-x-3 top-4 rounded-2xl bg-zinc-50 p-3 text-center text-xs font-black text-zinc-400">Sin clases</div> : null}
+                  {dayClasses.map((gymClass, index) => (
+                    <article key={gymClass.id} className="absolute overflow-hidden rounded-2xl border-l-4 bg-white p-2 shadow-[0_10px_24px_rgba(0,0,0,0.10)] ring-1 ring-zinc-200" style={weeklyClassStyle(gymClass, index)}>
+                      <div className="flex h-full flex-col">
+                        <div className="min-w-0">
+                          <p className="truncate text-[11px] font-black text-zinc-500">{String(gymClass.starts_at).slice(0, 5)} - {String(gymClass.ends_at).slice(0, 5)}</p>
+                          <p className="line-clamp-2 text-sm font-black leading-tight text-zinc-950">{gymClass.name}</p>
+                          <p className="truncate text-[11px] font-bold text-zinc-500">{gymClass.category} · {gymClass.level}</p>
+                          <p className="truncate text-[11px] text-zinc-500">{gymClass.room ?? "Sala"} · {gymClass.trainer_name ?? "Sin entrenador"}</p>
+                        </div>
+                        <div className="mt-auto flex flex-wrap gap-1 pt-2">
+                          <button onClick={() => onOpenDetail(gymClass)} className="rounded-lg bg-[#ffcc00] px-2 py-1 text-[10px] font-black text-zinc-950">Control</button>
+                          <button onClick={() => onEdit(gymClass)} className="rounded-lg bg-zinc-950 px-2 py-1 text-[10px] font-bold text-white">Editar</button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </section>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
