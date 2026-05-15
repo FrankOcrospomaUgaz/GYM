@@ -3,6 +3,8 @@ export type AuthUser = {
   name: string;
   email: string;
   is_superadmin: boolean;
+  tenant_id?: number | null;
+  branch_id?: number | null;
   role_slug?: string | null;
   role_name?: string | null;
   permissions?: string[];

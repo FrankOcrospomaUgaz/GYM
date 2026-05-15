@@ -47,6 +47,12 @@ Route::middleware('auth')->group(function (): void {
         Route::get('equipment', [GymController::class, 'equipment']);
         Route::match(['get', 'post'], 'expenses', [GymController::class, 'expenses']);
         Route::get('notifications', [GymController::class, 'notifications']);
+        Route::get('saas', [GymController::class, 'saas']);
+        Route::post('saas/tenants', [GymController::class, 'storeTenant']);
+        Route::put('saas/tenants/{tenant}', [GymController::class, 'updateTenant']);
+        Route::post('saas/tenants/{tenant}/modules', [GymController::class, 'updateTenantModules']);
+        Route::post('saas/users', [GymController::class, 'storeTenantUser']);
+        Route::post('saas/branches', [GymController::class, 'storeBranch']);
     });
 
     Route::get('/{any?}', DashboardController::class)->where('any', '.*');

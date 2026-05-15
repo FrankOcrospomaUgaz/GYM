@@ -4,60 +4,173 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use Carbon\Carbon;
+use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
 class GymController extends Controller
 {
-    public function dashboard(): JsonResponse
+    private const MODULES = [
+        'dashboard' => 'Panel',
+        'members' => 'Socios',
+        'plans' => 'Planes',
+        'memberships' => 'Membresías',
+        'attendance' => 'Accesos',
+        'classes' => 'Clases',
+        'finance' => 'Caja',
+        'equipment' => 'Equipos',
+    ];
+
+    private function isSystemAdmin(?User $user): bool
+    {
+        return (bool) ($user?->is_superadmin);
+    }
+
+    private function tenantId(Request $request): ?int
+    {
+        $user = $request->user();
+        if ($this->isSystemAdmin($user) && $request->filled('tenant_id')) {
+            return (int) $request->query('tenant_id');
+        }
+
+        return $user?->tenant_id ? (int) $user->tenant_id : null;
+    }
+
+    private function defaultTenantId(Request $request): ?int
+    {
+        return $this->tenantId($request) ?? DB::table('gym_tenants')->orderBy('id')->value('id');
+    }
+
+    private function scopeTenant($query, Request $request, string $table)
+    {
+        $tenantId = $this->tenantId($request);
+        if ($tenantId !== null) {
+            $query->where($table.'.tenant_id', $tenantId);
+        } elseif (! $this->isSystemAdmin($request->user())) {
+            $query->whereRaw('1 = 0');
+        }
+
+        return $query;
+    }
+
+    private function scopeBranches($query, Request $request, string $table): void
+    {
+        $user = $request->user();
+        if ($this->isSystemAdmin($user)) {
+            return;
+        }
+
+        $branchIds = DB::table('gym_branch_user')->where('user_id', $user?->id)->pluck('branch_id')->all();
+        if ($user?->branch_id) {
+            $branchIds[] = (int) $user->branch_id;
+        }
+
+        if ($branchIds !== [] && $user?->role?->slug !== 'admin') {
+            $query->whereIn($table.'.branch_id', array_values(array_unique($branchIds)));
+        }
+    }
+
+    private function branchIdForWrite(Request $request, mixed $branchId): ?int
+    {
+        $tenantId = $this->defaultTenantId($request);
+        $branchId = $branchId ? (int) $branchId : ((int) ($request->user()?->branch_id ?? 0) ?: null);
+
+        if ($branchId === null) {
+            return DB::table('gym_branches')->where('tenant_id', $tenantId)->orderBy('id')->value('id');
+        }
+
+        $query = DB::table('gym_branches')->where('id', $branchId);
+        if ($tenantId !== null) {
+            $query->where('tenant_id', $tenantId);
+        }
+
+        abort_unless($query->exists(), 422, 'La sede seleccionada no pertenece al cliente activo.');
+
+        return $branchId;
+    }
+
+    private function enabledModules(Request $request): array
+    {
+        if ($this->isSystemAdmin($request->user())) {
+            return array_keys(self::MODULES);
+        }
+
+        $tenantId = $this->tenantId($request);
+        if ($tenantId === null) {
+            return [];
+        }
+
+        return DB::table('gym_tenant_modules')
+            ->where('tenant_id', $tenantId)
+            ->where('is_enabled', true)
+            ->pluck('module')
+            ->all();
+    }
+
+    private function requireSystemAdmin(Request $request): void
+    {
+        abort_unless($this->isSystemAdmin($request->user()), 403, 'Solo el administrador del sistema puede realizar esta acción.');
+    }
+
+    public function dashboard(Request $request): JsonResponse
     {
         $today = Carbon::today();
         $monthStart = $today->copy()->startOfMonth();
         $monthEnd = $today->copy()->endOfMonth();
 
-        $income = (float) DB::table('gym_payments')
+        $payments = $this->scopeTenant(DB::table('gym_payments'), $request, 'gym_payments');
+        $expensesQuery = $this->scopeTenant(DB::table('gym_expenses'), $request, 'gym_expenses');
+        $membershipsQuery = $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships');
+        $membersQuery = $this->scopeTenant(DB::table('gym_members'), $request, 'gym_members');
+        $attendanceQuery = $this->scopeTenant(DB::table('gym_attendances'), $request, 'gym_attendances');
+        $notificationsQuery = $this->scopeTenant(DB::table('gym_notifications'), $request, 'gym_notifications');
+
+        $income = (float) $payments
             ->where('status', 'paid')
             ->whereBetween('paid_on', [$monthStart->toDateString(), $monthEnd->toDateString()])
             ->sum('amount');
 
-        $expenses = (float) DB::table('gym_expenses')
+        $expenses = (float) $expensesQuery
             ->whereBetween('spent_on', [$monthStart->toDateString(), $monthEnd->toDateString()])
             ->sum('amount');
 
-        $expiring = DB::table('gym_memberships')
+        $expiring = $membershipsQuery
             ->where('status', 'active')
             ->whereBetween('ends_on', [$today->toDateString(), $today->copy()->addDays(7)->toDateString()])
             ->count();
 
         return response()->json([
             'kpis' => [
-                ['label' => 'Socios activos', 'value' => DB::table('gym_members')->where('status', 'active')->count(), 'hint' => 'Clientes con estado activo'],
+                ['label' => 'Socios activos', 'value' => $membersQuery->where('status', 'active')->count(), 'hint' => 'Clientes con estado activo'],
                 ['label' => 'Ingresos del mes', 'value' => 'S/ '.number_format($income, 2), 'hint' => 'Pagos confirmados'],
                 ['label' => 'Utilidad estimada', 'value' => 'S/ '.number_format($income - $expenses, 2), 'hint' => 'Ingresos menos gastos'],
                 ['label' => 'Por vencer', 'value' => $expiring, 'hint' => 'Membresías próximos 7 días'],
             ],
-            'attendance_today' => DB::table('gym_attendances')->whereDate('checked_in_at', $today->toDateString())->count(),
-            'plan_mix' => DB::table('gym_memberships')
+            'attendance_today' => $attendanceQuery->whereDate('checked_in_at', $today->toDateString())->count(),
+            'plan_mix' => $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
                 ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
                 ->select('gym_plans.name', DB::raw('count(*) as total'))
                 ->where('gym_memberships.status', 'active')
                 ->groupBy('gym_plans.name')
                 ->get(),
-            'notifications' => DB::table('gym_notifications')->whereNull('read_at')->latest()->limit(6)->get(),
+            'notifications' => $notificationsQuery->whereNull('read_at')->latest()->limit(6)->get(),
+            'enabled_modules' => $this->enabledModules($request),
         ]);
     }
 
     public function members(Request $request): JsonResponse
     {
         $search = trim((string) $request->query('search', ''));
-        $query = DB::table('gym_members')
+        $query = $this->scopeTenant(DB::table('gym_members'), $request, 'gym_members')
             ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_members.branch_id')
             ->select('gym_members.*', 'gym_branches.name as branch_name')
             ->orderByDesc('gym_members.id');
+        $this->scopeBranches($query, $request, 'gym_members');
 
         if ($search !== '') {
             $query->where(function ($q) use ($search): void {
@@ -92,6 +205,8 @@ class GymController extends Controller
             'branch_id' => ['nullable', 'exists:gym_branches,id'],
         ]);
 
+        $data['tenant_id'] = $this->defaultTenantId($request);
+        $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
         $data['document_number'] = $data['document_number'] ?? $data['dni'];
         $nextId = ((int) DB::table('gym_members')->max('id')) + 1;
         $data['member_code'] = 'M-'.str_pad((string) $nextId, 4, '0', STR_PAD_LEFT);
@@ -126,14 +241,15 @@ class GymController extends Controller
             'branch_id' => ['nullable', 'exists:gym_branches,id'],
         ]);
         $data['document_number'] = $data['document_number'] ?? $data['dni'];
+        $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
         $data['updated_at'] = now();
 
-        DB::table('gym_members')->where('id', $member)->update($data);
+        $this->scopeTenant(DB::table('gym_members')->where('id', $member), $request, 'gym_members')->update($data);
 
         return response()->json(DB::table('gym_members')->find($member));
     }
 
-    public function destroyMember(int $member): JsonResponse
+    public function destroyMember(Request $request, int $member): JsonResponse
     {
         $hasHistory = DB::table('gym_memberships')->where('member_id', $member)->exists()
             || DB::table('gym_payments')->where('member_id', $member)->exists()
@@ -152,19 +268,19 @@ class GymController extends Controller
             ]);
         }
 
-        DB::table('gym_members')->where('id', $member)->delete();
+        $this->scopeTenant(DB::table('gym_members')->where('id', $member), $request, 'gym_members')->delete();
 
         return response()->json(['ok' => true, 'mode' => 'deleted']);
     }
 
-    public function plans(): JsonResponse
+    public function plans(Request $request): JsonResponse
     {
-        return response()->json(DB::table('gym_plans')->orderBy('price')->get());
+        return response()->json($this->scopeTenant(DB::table('gym_plans'), $request, 'gym_plans')->orderBy('price')->get());
     }
 
-    public function fitnessGoals(): JsonResponse
+    public function fitnessGoals(Request $request): JsonResponse
     {
-        return response()->json(DB::table('gym_fitness_goals')->where('is_active', true)->orderBy('name')->get());
+        return response()->json($this->scopeTenant(DB::table('gym_fitness_goals'), $request, 'gym_fitness_goals')->where('is_active', true)->orderBy('name')->get());
     }
 
     public function storeFitnessGoal(Request $request): JsonResponse
@@ -173,6 +289,7 @@ class GymController extends Controller
             'name' => ['required', 'string', 'max:120', Rule::unique('gym_fitness_goals', 'name')],
             'description' => ['nullable', 'string', 'max:255'],
         ]);
+        $data['tenant_id'] = $this->defaultTenantId($request);
         $data['is_active'] = true;
         $data['created_at'] = now();
         $data['updated_at'] = now();
@@ -185,6 +302,7 @@ class GymController extends Controller
     public function storePlan(Request $request): JsonResponse
     {
         $data = $this->validatePlan($request);
+        $data['tenant_id'] = $this->defaultTenantId($request);
         $data['created_at'] = now();
         $data['updated_at'] = now();
 
@@ -198,17 +316,17 @@ class GymController extends Controller
         $data = $this->validatePlan($request, $plan);
         $data['updated_at'] = now();
 
-        DB::table('gym_plans')->where('id', $plan)->update($data);
+        $this->scopeTenant(DB::table('gym_plans')->where('id', $plan), $request, 'gym_plans')->update($data);
 
         return response()->json(DB::table('gym_plans')->find($plan));
     }
 
-    public function destroyPlan(int $plan): JsonResponse
+    public function destroyPlan(Request $request, int $plan): JsonResponse
     {
         $hasMemberships = DB::table('gym_memberships')->where('plan_id', $plan)->exists();
 
         if ($hasMemberships) {
-            DB::table('gym_plans')->where('id', $plan)->update([
+            $this->scopeTenant(DB::table('gym_plans')->where('id', $plan), $request, 'gym_plans')->update([
                 'is_active' => false,
                 'updated_at' => now(),
             ]);
@@ -220,7 +338,7 @@ class GymController extends Controller
             ]);
         }
 
-        DB::table('gym_plans')->where('id', $plan)->delete();
+        $this->scopeTenant(DB::table('gym_plans')->where('id', $plan), $request, 'gym_plans')->delete();
 
         return response()->json(['ok' => true, 'mode' => 'deleted']);
     }
@@ -244,9 +362,12 @@ class GymController extends Controller
         ]);
     }
 
-    public function branches(): JsonResponse
+    public function branches(Request $request): JsonResponse
     {
-        return response()->json(DB::table('gym_branches')->where('is_active', true)->orderBy('name')->get());
+        $query = $this->scopeTenant(DB::table('gym_branches'), $request, 'gym_branches')->where('is_active', true)->orderBy('name');
+        $this->scopeBranches($query, $request, 'gym_branches');
+
+        return response()->json($query->get());
     }
 
     public function reniec(Request $request): JsonResponse
@@ -364,7 +485,10 @@ class GymController extends Controller
             'notes' => ['nullable', 'string'],
         ]);
 
-        $plan = DB::table('gym_plans')->where('id', $data['plan_id'])->first();
+        $tenantId = $this->defaultTenantId($request);
+        abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $tenantId)->exists(), 422, 'El socio no pertenece al cliente activo.');
+        $plan = DB::table('gym_plans')->where('id', $data['plan_id'])->where('tenant_id', $tenantId)->first();
+        abort_unless($plan !== null, 422, 'El plan no pertenece al cliente activo.');
         $starts = Carbon::parse($data['starts_on']);
         $discount = (float) ($data['discount'] ?? 0);
         $amount = max(0, (float) $plan->price - $discount);
@@ -373,9 +497,10 @@ class GymController extends Controller
             ? $request->file('proof_photo')?->store('payment-proofs', 'public')
             : null;
 
-        return DB::transaction(function () use ($request, $data, $plan, $starts, $discount, $amount, $proofPath): JsonResponse {
+        return DB::transaction(function () use ($request, $data, $plan, $tenantId, $starts, $discount, $amount, $proofPath): JsonResponse {
             DB::table('gym_memberships')->where('member_id', $data['member_id'])->where('status', 'active')->update(['status' => 'replaced', 'updated_at' => now()]);
             $membershipId = DB::table('gym_memberships')->insertGetId([
+                'tenant_id' => $tenantId,
                 'member_id' => $data['member_id'],
                 'plan_id' => $data['plan_id'],
                 'starts_on' => $starts->toDateString(),
@@ -389,6 +514,7 @@ class GymController extends Controller
                 'updated_at' => now(),
             ]);
             $paymentId = DB::table('gym_payments')->insertGetId([
+                'tenant_id' => $tenantId,
                 'member_id' => $data['member_id'],
                 'membership_id' => $membershipId,
                 'receipt_number' => 'B001-'.str_pad((string) (((int) DB::table('gym_payments')->max('id')) + 1), 5, '0', STR_PAD_LEFT),
@@ -407,9 +533,9 @@ class GymController extends Controller
         });
     }
 
-    public function memberships(): JsonResponse
+    public function memberships(Request $request): JsonResponse
     {
-        return response()->json(DB::table('gym_memberships')
+        return response()->json($this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
             ->join('gym_members', 'gym_members.id', '=', 'gym_memberships.member_id')
             ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
             ->select('gym_memberships.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_plans.name as plan_name')
@@ -418,9 +544,9 @@ class GymController extends Controller
             ->get());
     }
 
-    public function memberMemberships(int $member): JsonResponse
+    public function memberMemberships(Request $request, int $member): JsonResponse
     {
-        return response()->json(DB::table('gym_memberships')
+        return response()->json($this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
             ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
             ->select('gym_memberships.*', 'gym_plans.name as plan_name')
             ->where('gym_memberships.member_id', $member)
@@ -428,9 +554,9 @@ class GymController extends Controller
             ->get());
     }
 
-    public function payments(): JsonResponse
+    public function payments(Request $request): JsonResponse
     {
-        return response()->json(DB::table('gym_payments')
+        return response()->json($this->scopeTenant(DB::table('gym_payments'), $request, 'gym_payments')
             ->join('gym_members', 'gym_members.id', '=', 'gym_payments.member_id')
             ->select('gym_payments.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"))
             ->orderByDesc('gym_payments.id')
@@ -458,8 +584,9 @@ class GymController extends Controller
             ->first();
 
         $id = DB::table('gym_attendances')->insertGetId([
+            'tenant_id' => $this->defaultTenantId($request),
             'member_id' => $data['member_id'],
-            'branch_id' => $data['branch_id'] ?? DB::table('gym_members')->where('id', $data['member_id'])->value('branch_id'),
+            'branch_id' => $this->branchIdForWrite($request, $data['branch_id'] ?? DB::table('gym_members')->where('id', $data['member_id'])->value('branch_id')),
             'checked_in_at' => now(),
             'source' => 'manual',
             'result' => $membership ? 'allowed' : 'blocked',
@@ -472,30 +599,33 @@ class GymController extends Controller
         return response()->json(DB::table('gym_attendances')->find($id), $membership ? 201 : 422);
     }
 
-    public function attendance(): JsonResponse
+    public function attendance(Request $request): JsonResponse
     {
-        return response()->json(DB::table('gym_attendances')
+        $query = $this->scopeTenant(DB::table('gym_attendances'), $request, 'gym_attendances')
             ->join('gym_members', 'gym_members.id', '=', 'gym_attendances.member_id')
             ->select('gym_attendances.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"))
-            ->orderByDesc('checked_in_at')
-            ->limit(80)
-            ->get());
+            ->orderByDesc('checked_in_at');
+        $this->scopeBranches($query, $request, 'gym_attendances');
+
+        return response()->json($query->limit(80)->get());
     }
 
-    public function classes(): JsonResponse
+    public function classes(Request $request): JsonResponse
     {
-        return response()->json(DB::table('gym_classes')
+        $query = $this->scopeTenant(DB::table('gym_classes'), $request, 'gym_classes')
             ->leftJoin('users', 'users.id', '=', 'gym_classes.trainer_id')
             ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_classes.branch_id')
             ->select('gym_classes.*', 'users.name as trainer_name', 'gym_branches.name as branch_name')
             ->orderBy('weekday')
-            ->orderBy('starts_at')
-            ->get());
+            ->orderBy('starts_at');
+        $this->scopeBranches($query, $request, 'gym_classes');
+
+        return response()->json($query->get());
     }
 
-    public function trainingSubscriptions(): JsonResponse
+    public function trainingSubscriptions(Request $request): JsonResponse
     {
-        return response()->json(DB::table('gym_training_subscriptions')
+        return response()->json($this->scopeTenant(DB::table('gym_training_subscriptions'), $request, 'gym_training_subscriptions')
             ->join('gym_members', 'gym_members.id', '=', 'gym_training_subscriptions.member_id')
             ->select('gym_training_subscriptions.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_members.dni')
             ->orderByDesc('gym_training_subscriptions.id')
@@ -526,11 +656,13 @@ class GymController extends Controller
         ]);
 
         $starts = Carbon::parse($data['starts_on']);
+        abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
         $proofPath = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
             ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public')
             : null;
 
         $id = DB::table('gym_training_subscriptions')->insertGetId([
+            'tenant_id' => $this->defaultTenantId($request),
             'member_id' => $data['member_id'],
             'discipline' => $data['discipline'],
             'monthly_fee' => $data['monthly_fee'],
@@ -554,6 +686,8 @@ class GymController extends Controller
     public function storeClass(Request $request): JsonResponse
     {
         $data = $this->validateClass($request);
+        $data['tenant_id'] = $this->defaultTenantId($request);
+        $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
         $data['created_at'] = now();
         $data['updated_at'] = now();
 
@@ -565,19 +699,20 @@ class GymController extends Controller
     public function updateClass(Request $request, int $class): JsonResponse
     {
         $data = $this->validateClass($request);
+        $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
         $data['updated_at'] = now();
 
-        DB::table('gym_classes')->where('id', $class)->update($data);
+        $this->scopeTenant(DB::table('gym_classes')->where('id', $class), $request, 'gym_classes')->update($data);
 
         return response()->json(DB::table('gym_classes')->find($class));
     }
 
-    public function destroyClass(int $class): JsonResponse
+    public function destroyClass(Request $request, int $class): JsonResponse
     {
         $hasBookings = DB::table('gym_class_bookings')->where('class_id', $class)->exists();
 
         if ($hasBookings) {
-            DB::table('gym_classes')->where('id', $class)->update([
+            $this->scopeTenant(DB::table('gym_classes')->where('id', $class), $request, 'gym_classes')->update([
                 'is_active' => false,
                 'updated_at' => now(),
             ]);
@@ -585,7 +720,7 @@ class GymController extends Controller
             return response()->json(['ok' => true, 'mode' => 'deactivated', 'message' => 'La clase tiene reservas; se desactivó para conservar histórico.']);
         }
 
-        DB::table('gym_classes')->where('id', $class)->delete();
+        $this->scopeTenant(DB::table('gym_classes')->where('id', $class), $request, 'gym_classes')->delete();
 
         return response()->json(['ok' => true, 'mode' => 'deleted']);
     }
@@ -594,7 +729,7 @@ class GymController extends Controller
     {
         $date = (string) $request->query('date', now()->toDateString());
 
-        return response()->json(DB::table('gym_class_bookings')
+        return response()->json($this->scopeTenant(DB::table('gym_class_bookings'), $request, 'gym_class_bookings')
             ->join('gym_members', 'gym_members.id', '=', 'gym_class_bookings.member_id')
             ->select('gym_class_bookings.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_members.dni')
             ->where('gym_class_bookings.class_id', $class)
@@ -611,6 +746,8 @@ class GymController extends Controller
             'booking_date' => ['required', 'date'],
             'notes' => ['nullable', 'string', 'max:255'],
         ]);
+        abort_unless((int) $gymClass->tenant_id === (int) $this->defaultTenantId($request), 422, 'La clase no pertenece al cliente activo.');
+        abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
 
         $reserved = DB::table('gym_class_bookings')
             ->where('class_id', $class)
@@ -624,7 +761,7 @@ class GymController extends Controller
 
         DB::table('gym_class_bookings')->updateOrInsert(
             ['class_id' => $class, 'member_id' => $data['member_id'], 'booking_date' => $data['booking_date']],
-            ['status' => 'reserved', 'notes' => $data['notes'] ?? null, 'created_at' => now(), 'updated_at' => now()]
+            ['tenant_id' => $this->defaultTenantId($request), 'status' => 'reserved', 'notes' => $data['notes'] ?? null, 'created_at' => now(), 'updated_at' => now()]
         );
 
         return response()->json(['ok' => true], 201);
@@ -651,9 +788,12 @@ class GymController extends Controller
         return response()->json(['ok' => true]);
     }
 
-    public function equipment(): JsonResponse
+    public function equipment(Request $request): JsonResponse
     {
-        return response()->json(DB::table('gym_equipment')->orderBy('next_maintenance_on')->get());
+        $query = $this->scopeTenant(DB::table('gym_equipment'), $request, 'gym_equipment')->orderBy('next_maintenance_on');
+        $this->scopeBranches($query, $request, 'gym_equipment');
+
+        return response()->json($query->get());
     }
 
     /**
@@ -690,6 +830,7 @@ class GymController extends Controller
                 'proof_photo' => ['nullable', 'image', 'max:4096'],
                 'description' => ['nullable', 'string'],
             ]);
+            $data['tenant_id'] = $this->defaultTenantId($request);
             $data['proof_path'] = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
                 ? $request->file('proof_photo')?->store('expense-proofs', 'public')
                 : null;
@@ -699,16 +840,158 @@ class GymController extends Controller
             DB::table('gym_expenses')->insert($data);
         }
 
-        return response()->json(DB::table('gym_expenses')->orderByDesc('spent_on')->limit(80)->get()->map(function ($expense) {
+        return response()->json($this->scopeTenant(DB::table('gym_expenses'), $request, 'gym_expenses')->orderByDesc('spent_on')->limit(80)->get()->map(function ($expense) {
             $expense->proof_url = $expense->proof_path ? Storage::disk('public')->url($expense->proof_path) : null;
 
             return $expense;
         }));
     }
 
-    public function notifications(): JsonResponse
+    public function notifications(Request $request): JsonResponse
     {
-        return response()->json(DB::table('gym_notifications')->orderByRaw('read_at is not null')->latest()->limit(50)->get());
+        return response()->json($this->scopeTenant(DB::table('gym_notifications'), $request, 'gym_notifications')->orderByRaw('read_at is not null')->latest()->limit(50)->get());
+    }
+
+    public function saas(Request $request): JsonResponse
+    {
+        $this->requireSystemAdmin($request);
+
+        $tenants = DB::table('gym_tenants')
+            ->orderByDesc('id')
+            ->get()
+            ->map(function ($tenant) {
+                $tenant->branches_count = DB::table('gym_branches')->where('tenant_id', $tenant->id)->count();
+                $tenant->members_count = DB::table('gym_members')->where('tenant_id', $tenant->id)->count();
+                $tenant->users_count = DB::table('users')->where('tenant_id', $tenant->id)->count();
+                $tenant->modules = DB::table('gym_tenant_modules')->where('tenant_id', $tenant->id)->orderBy('module')->get();
+
+                return $tenant;
+            });
+
+        return response()->json([
+            'modules' => collect(self::MODULES)->map(fn ($label, $module) => ['module' => $module, 'label' => $label])->values(),
+            'tenants' => $tenants,
+            'users' => User::query()
+                ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
+                ->leftJoin('gym_tenants', 'gym_tenants.id', '=', 'users.tenant_id')
+                ->leftJoin('gym_branches', 'gym_branches.id', '=', 'users.branch_id')
+                ->select('users.id', 'users.name', 'users.email', 'users.is_superadmin', 'users.is_active', 'users.tenant_id', 'users.branch_id', 'roles.name as role_name', 'roles.slug as role_slug', 'gym_tenants.name as tenant_name', 'gym_branches.name as branch_name')
+                ->orderByDesc('users.id')
+                ->limit(120)
+                ->get(),
+            'roles' => DB::table('roles')->select('id', 'name', 'slug')->orderBy('name')->get(),
+            'branches' => DB::table('gym_branches')->select('id', 'tenant_id', 'name')->orderBy('name')->get(),
+        ]);
+    }
+
+    public function storeTenant(Request $request): JsonResponse
+    {
+        $this->requireSystemAdmin($request);
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:160'],
+            'slug' => ['required', 'string', 'max:80', Rule::unique('gym_tenants', 'slug')],
+            'contact_name' => ['nullable', 'string', 'max:120'],
+            'contact_email' => ['nullable', 'email', 'max:120'],
+            'contact_phone' => ['nullable', 'string', 'max:40'],
+            'plan_name' => ['required', 'string', 'max:80'],
+            'billing_status' => ['required', Rule::in(['active', 'trial', 'paused', 'cancelled'])],
+            'primary_color' => ['required', 'string', 'max:20'],
+            'notes' => ['nullable', 'string'],
+            'is_active' => ['required', 'boolean'],
+        ]);
+        $data['created_at'] = now();
+        $data['updated_at'] = now();
+        $id = DB::table('gym_tenants')->insertGetId($data);
+        $this->syncTenantModules($id, array_keys(self::MODULES));
+
+        return response()->json(DB::table('gym_tenants')->find($id), 201);
+    }
+
+    public function updateTenant(Request $request, int $tenant): JsonResponse
+    {
+        $this->requireSystemAdmin($request);
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:160'],
+            'slug' => ['required', 'string', 'max:80', Rule::unique('gym_tenants', 'slug')->ignore($tenant)],
+            'contact_name' => ['nullable', 'string', 'max:120'],
+            'contact_email' => ['nullable', 'email', 'max:120'],
+            'contact_phone' => ['nullable', 'string', 'max:40'],
+            'plan_name' => ['required', 'string', 'max:80'],
+            'billing_status' => ['required', Rule::in(['active', 'trial', 'paused', 'cancelled'])],
+            'primary_color' => ['required', 'string', 'max:20'],
+            'notes' => ['nullable', 'string'],
+            'is_active' => ['required', 'boolean'],
+        ]);
+        $data['updated_at'] = now();
+        DB::table('gym_tenants')->where('id', $tenant)->update($data);
+
+        return response()->json(DB::table('gym_tenants')->find($tenant));
+    }
+
+    public function updateTenantModules(Request $request, int $tenant): JsonResponse
+    {
+        $this->requireSystemAdmin($request);
+        $data = $request->validate([
+            'modules' => ['required', 'array'],
+            'modules.*' => ['required', Rule::in(array_keys(self::MODULES))],
+        ]);
+        $this->syncTenantModules($tenant, $data['modules']);
+
+        return response()->json(['ok' => true]);
+    }
+
+    public function storeTenantUser(Request $request): JsonResponse
+    {
+        $this->requireSystemAdmin($request);
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'email' => ['required', 'email', 'max:120', Rule::unique('users', 'email')],
+            'password' => ['required', 'string', 'min:8'],
+            'tenant_id' => ['nullable', 'exists:gym_tenants,id'],
+            'branch_id' => ['nullable', 'exists:gym_branches,id'],
+            'role_id' => ['nullable', 'exists:roles,id'],
+            'is_superadmin' => ['required', 'boolean'],
+            'is_active' => ['required', 'boolean'],
+            'phone' => ['nullable', 'string', 'max:40'],
+        ]);
+        $data['password'] = Hash::make($data['password']);
+        $user = User::query()->create($data);
+        if ($user->branch_id) {
+            DB::table('gym_branch_user')->updateOrInsert(['user_id' => $user->id, 'branch_id' => $user->branch_id]);
+        }
+
+        return response()->json($user->authPayload(), 201);
+    }
+
+    public function storeBranch(Request $request): JsonResponse
+    {
+        $this->requireSystemAdmin($request);
+        $data = $request->validate([
+            'tenant_id' => ['required', 'exists:gym_tenants,id'],
+            'name' => ['required', 'string', 'max:120'],
+            'phone' => ['nullable', 'string', 'max:40'],
+            'email' => ['nullable', 'email', 'max:120'],
+            'address' => ['required', 'string', 'max:180'],
+            'city' => ['required', 'string', 'max:80'],
+            'opening_hours' => ['nullable', 'string', 'max:180'],
+            'capacity' => ['required', 'integer', 'min:1', 'max:10000'],
+            'is_active' => ['required', 'boolean'],
+        ]);
+        $data['created_at'] = now();
+        $data['updated_at'] = now();
+        $id = DB::table('gym_branches')->insertGetId($data);
+
+        return response()->json(DB::table('gym_branches')->find($id), 201);
+    }
+
+    private function syncTenantModules(int $tenantId, array $enabledModules): void
+    {
+        foreach (self::MODULES as $module => $label) {
+            DB::table('gym_tenant_modules')->updateOrInsert(
+                ['tenant_id' => $tenantId, 'module' => $module],
+                ['label' => $label, 'is_enabled' => in_array($module, $enabledModules, true), 'created_at' => now(), 'updated_at' => now()]
+            );
+        }
     }
 
     private function normalizeReniecDate(string $value): string

@@ -4,7 +4,7 @@ import { httpClient } from "../http/client";
 import { useAuth } from "../context/AuthContext";
 
 type AnyRow = Record<string, any>;
-type Tab = "dashboard" | "members" | "plans" | "memberships" | "attendance" | "classes" | "finance" | "equipment";
+type Tab = "dashboard" | "members" | "plans" | "memberships" | "attendance" | "classes" | "finance" | "equipment" | "system";
 type ConfirmState = { title: string; body: string; onConfirm: () => Promise<void> } | null;
 
 const tabs: { id: Tab; label: string; icon: any }[] = [
@@ -16,6 +16,7 @@ const tabs: { id: Tab; label: string; icon: any }[] = [
   { id: "classes", label: "Clases", icon: CalendarDays },
   { id: "finance", label: "Caja", icon: Bell },
   { id: "equipment", label: "Equipos", icon: Wrench },
+  { id: "system", label: "Sistema SaaS", icon: ShieldCheck },
 ];
 
 const emptyMember = {
@@ -126,6 +127,10 @@ const labels: Record<string, string> = {
   room: "Ambiente",
   level: "Nivel",
   color: "Color",
+  email: "Correo",
+  tenant_name: "Cliente",
+  role_name: "Perfil",
+  is_superadmin: "Admin sistema",
 };
 
 function money(value: unknown) {
@@ -172,6 +177,8 @@ const cellTranslations: Record<string, Record<string, string>> = {
     operational: "Operativo",
     maintenance: "En mantenimiento",
     damaged: "Averiado",
+    trial: "Prueba",
+    paused: "Pausado",
   },
   result: {
     allowed: "Acceso autorizado",
@@ -254,6 +261,7 @@ export function GymPage() {
   const [trainingSubscriptions, setTrainingSubscriptions] = useState<AnyRow[]>([]);
   const [equipment, setEquipment] = useState<AnyRow[]>([]);
   const [notifications, setNotifications] = useState<AnyRow[]>([]);
+  const [saas, setSaas] = useState<AnyRow>({ tenants: [], users: [], modules: [], roles: [], branches: [] });
   const [memberForm, setMemberForm] = useState<AnyRow>(emptyMember);
   const [planForm, setPlanForm] = useState<AnyRow>(emptyPlan);
   const [saleForm, setSaleForm] = useState<AnyRow>({ member_id: "", plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", proof_photo: null, notes: "" });
@@ -281,7 +289,12 @@ export function GymPage() {
   const [search, setSearch] = useState("");
 
   const activeMembers = useMemo(() => members.filter((member) => member.status === "active"), [members]);
-  const currentTab = tabs.find((item) => item.id === tab) ?? tabs[0];
+  const visibleTabs = useMemo(() => {
+    if (user?.is_superadmin) return tabs;
+    const enabled = new Set<string>(dashboard.enabled_modules ?? tabs.filter((item) => item.id !== "system").map((item) => item.id));
+    return tabs.filter((item) => item.id !== "system" && enabled.has(item.id));
+  }, [dashboard.enabled_modules, user?.is_superadmin]);
+  const currentTab = visibleTabs.find((item) => item.id === tab) ?? visibleTabs[0] ?? tabs[0];
 
   function selectTab(nextTab: Tab) {
     setTab(nextTab);
@@ -315,6 +328,10 @@ export function GymPage() {
     setTrainingSubscriptions(trainingRes.data);
     setEquipment(equipmentRes.data);
     setNotifications(notificationRes.data);
+    if (user?.is_superadmin) {
+      const saasRes = await httpClient.get("/api/gym/saas");
+      setSaas(saasRes.data);
+    }
   }
 
   useEffect(() => {
@@ -617,7 +634,7 @@ export function GymPage() {
           <button type="button" onClick={() => setMobileMenuOpen(false)} className="rounded-xl p-2 text-zinc-400 hover:bg-white/10 hover:text-white lg:hidden" aria-label="Cerrar menú"><X className="h-5 w-5" /></button>
         </div>
         <nav className="flex-1 space-y-1 overflow-y-auto px-4 py-6">
-          {tabs.map((item) => {
+          {visibleTabs.map((item) => {
             const Icon = item.icon;
             return <button key={item.id} onClick={() => selectTab(item.id)} className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-bold transition ${tab === item.id ? "bg-[#ffcc00] text-zinc-950" : "text-zinc-300 hover:bg-white/10 hover:text-white"}`}><Icon className="h-5 w-5 shrink-0" />{item.label}</button>;
           })}
@@ -658,10 +675,11 @@ export function GymPage() {
           {tab === "classes" ? <ClassesModule classes={classes} subscriptions={trainingSubscriptions} onNew={openNewClass} onNewSubscription={openTrainingSubscription} onEdit={openEditClass} onDelete={confirmDeleteClass} onOpenDetail={(gymClass) => void openClassDetail(gymClass)} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos."><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} /></Module> : null}
           {tab === "finance" ? <Module title="Caja" subtitle="Pagos recibidos y gastos operativos." onNew={() => setExpenseModalOpen(true)} newLabel="Registrar gasto"><DataTable title="Pagos recibidos" rows={payments} columns={["receipt_number", "member_name", "amount", "method", "paid_on", "proof_url", "status"]} /></Module> : null}
+          {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} /> : null}
         </section>
       </main>
 
-      <BottomNav tab={tab} onSelect={selectTab} />
+      <BottomNav tab={tab} onSelect={selectTab} tabs={visibleTabs.filter((item) => item.id !== "system")} />
       <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => setMemberModalOpen(false)} onSubmit={saveMember} />
       <PlanModal open={planModalOpen} editing={Boolean(editingPlanId)} form={planForm} onChange={setPlanForm} onClose={() => setPlanModalOpen(false)} onSubmit={savePlan} />
       <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} onChange={setSaleForm} onClose={() => setSaleModalOpen(false)} onSubmit={sellMembership} />
@@ -921,6 +939,110 @@ function ClassModal({ open, editing, form, branches, onChange, onClose, onSubmit
   );
 }
 
+function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promise<void> }) {
+  const tenants: AnyRow[] = data.tenants ?? [];
+  const modules: AnyRow[] = data.modules ?? [];
+  const roles: AnyRow[] = data.roles ?? [];
+  const branches: AnyRow[] = data.branches ?? [];
+  const adminRole = roles.find((role) => role.slug === "admin");
+  const [tenantForm, setTenantForm] = useState<AnyRow>({ name: "", slug: "", contact_name: "", contact_email: "", contact_phone: "", plan_name: "Profesional", billing_status: "active", primary_color: "#ffcc00", notes: "", is_active: true });
+  const [branchForm, setBranchForm] = useState<AnyRow>({ tenant_id: "", name: "", phone: "", email: "", address: "", city: "Lima", opening_hours: "", capacity: "120", is_active: true });
+  const [userForm, setUserForm] = useState<AnyRow>({ name: "", email: "", password: "GymPro2026!", tenant_id: "", branch_id: "", role_id: adminRole?.id ?? "", is_superadmin: false, is_active: true, phone: "" });
+
+  async function saveTenant(event: FormEvent) {
+    event.preventDefault();
+    await httpClient.post("/api/gym/saas/tenants", tenantForm);
+    setTenantForm({ name: "", slug: "", contact_name: "", contact_email: "", contact_phone: "", plan_name: "Profesional", billing_status: "active", primary_color: "#ffcc00", notes: "", is_active: true });
+    await reload();
+  }
+
+  async function saveBranch(event: FormEvent) {
+    event.preventDefault();
+    await httpClient.post("/api/gym/saas/branches", { ...branchForm, capacity: Number(branchForm.capacity) });
+    setBranchForm({ tenant_id: "", name: "", phone: "", email: "", address: "", city: "Lima", opening_hours: "", capacity: "120", is_active: true });
+    await reload();
+  }
+
+  async function saveUser(event: FormEvent) {
+    event.preventDefault();
+    await httpClient.post("/api/gym/saas/users", { ...userForm, role_id: userForm.role_id || adminRole?.id || null });
+    setUserForm({ name: "", email: "", password: "GymPro2026!", tenant_id: "", branch_id: "", role_id: adminRole?.id ?? "", is_superadmin: false, is_active: true, phone: "" });
+    await reload();
+  }
+
+  async function toggleModule(tenant: AnyRow, module: string) {
+    const enabled = new Set((tenant.modules ?? []).filter((item: AnyRow) => item.is_enabled).map((item: AnyRow) => item.module));
+    if (enabled.has(module)) enabled.delete(module); else enabled.add(module);
+    await httpClient.post(`/api/gym/saas/tenants/${tenant.id}/modules`, { modules: Array.from(enabled) });
+    await reload();
+  }
+
+  return (
+    <Module title="Sistema SaaS" subtitle="Clientes, sedes, usuarios administradores y módulos habilitados por cliente.">
+      <div className="grid gap-5 xl:grid-cols-3">
+        <form onSubmit={saveTenant} className={cardClass()}>
+          <h3 className="text-lg font-black">Nuevo cliente</h3>
+          <div className="mt-3 grid gap-3">
+            <Field label="Nombre comercial" value={tenantForm.name} onChange={(value) => setTenantForm({ ...tenantForm, name: value, slug: value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") })} required />
+            <Field label="Código URL" value={tenantForm.slug} onChange={(value) => setTenantForm({ ...tenantForm, slug: value })} required />
+            <Field label="Contacto" value={tenantForm.contact_name} onChange={(value) => setTenantForm({ ...tenantForm, contact_name: value })} />
+            <Field label="Correo" type="email" value={tenantForm.contact_email} onChange={(value) => setTenantForm({ ...tenantForm, contact_email: value })} />
+            <Field label="Teléfono" value={tenantForm.contact_phone} onChange={(value) => setTenantForm({ ...tenantForm, contact_phone: value })} />
+            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado<select value={tenantForm.billing_status} onChange={(event) => setTenantForm({ ...tenantForm, billing_status: event.target.value })} className={fieldClass()}><option value="active">Activo</option><option value="trial">Prueba</option><option value="paused">Pausado</option><option value="cancelled">Cancelado</option></select></label>
+            <FormActions onClose={() => setTenantForm({ ...tenantForm, name: "", slug: "" })} submitLabel="Crear cliente" />
+          </div>
+        </form>
+
+        <form onSubmit={saveBranch} className={cardClass()}>
+          <h3 className="text-lg font-black">Nueva sede</h3>
+          <div className="mt-3 grid gap-3">
+            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Cliente</RequiredLabel><select required value={branchForm.tenant_id} onChange={(event) => setBranchForm({ ...branchForm, tenant_id: event.target.value })} className={fieldClass()}><option value="">Seleccione cliente</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></label>
+            <Field label="Nombre de sede" value={branchForm.name} onChange={(value) => setBranchForm({ ...branchForm, name: value })} required />
+            <Field label="Dirección" value={branchForm.address} onChange={(value) => setBranchForm({ ...branchForm, address: value })} required />
+            <Field label="Ciudad" value={branchForm.city} onChange={(value) => setBranchForm({ ...branchForm, city: value })} required />
+            <Field label="Aforo" type="number" value={branchForm.capacity} onChange={(value) => setBranchForm({ ...branchForm, capacity: value })} required />
+            <FormActions onClose={() => setBranchForm({ ...branchForm, name: "", address: "" })} submitLabel="Crear sede" />
+          </div>
+        </form>
+
+        <form onSubmit={saveUser} className={cardClass()}>
+          <h3 className="text-lg font-black">Usuario cliente</h3>
+          <div className="mt-3 grid gap-3">
+            <Field label="Nombre" value={userForm.name} onChange={(value) => setUserForm({ ...userForm, name: value })} required />
+            <Field label="Correo" type="email" value={userForm.email} onChange={(value) => setUserForm({ ...userForm, email: value })} required />
+            <Field label="Clave inicial" value={userForm.password} onChange={(value) => setUserForm({ ...userForm, password: value })} required />
+            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Cliente<select value={userForm.tenant_id} onChange={(event) => setUserForm({ ...userForm, tenant_id: event.target.value })} className={fieldClass()}><option value="">Administrador del sistema</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></label>
+            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Sede<select value={userForm.branch_id} onChange={(event) => setUserForm({ ...userForm, branch_id: event.target.value })} className={fieldClass()}><option value="">Todas las sedes del cliente</option>{branches.filter((branch) => !userForm.tenant_id || String(branch.tenant_id) === String(userForm.tenant_id)).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+            <label className="flex items-center gap-2 rounded-2xl bg-zinc-50 p-4 text-sm font-bold"><input type="checkbox" checked={userForm.is_superadmin} onChange={(event) => setUserForm({ ...userForm, is_superadmin: event.target.checked })} /> Administrador del sistema</label>
+            <FormActions onClose={() => setUserForm({ ...userForm, name: "", email: "" })} submitLabel="Crear usuario" />
+          </div>
+        </form>
+      </div>
+
+      <div className={cardClass()}>
+        <h3 className="mb-4 text-xl font-black">Clientes SaaS y módulos</h3>
+        <div className="grid gap-4">
+          {tenants.map((tenant) => {
+            const enabled = new Set((tenant.modules ?? []).filter((item: AnyRow) => item.is_enabled).map((item: AnyRow) => item.module));
+            return (
+              <article key={tenant.id} className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div><h4 className="text-lg font-black">{tenant.name}</h4><p className="text-sm font-semibold text-zinc-500">{tenant.branches_count} sedes · {tenant.members_count} socios · {tenant.users_count} usuarios</p></div>
+                  <span className="rounded-full bg-[#ffcc00] px-3 py-1 text-xs font-black text-zinc-950">{cellTranslations.status[tenant.billing_status] ?? tenant.billing_status}</span>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {modules.map((item) => <button key={item.module} type="button" onClick={() => void toggleModule(tenant, item.module)} className={`rounded-2xl border px-3 py-2 text-xs font-black ${enabled.has(item.module) ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-500"}`}>{item.label}</button>)}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+      <DataTable title="Usuarios del sistema" rows={data.users ?? []} columns={["name", "email", "tenant_name", "branch_name", "role_name", "is_superadmin", "is_active"]} />
+    </Module>
+  );
+}
+
 function ClassDetailModal({ open, gymClass, members, rows, bookingDate, selectedMemberId, onDateChange, onMemberChange, onReserve, onCheckIn, onCancel, onClose }: { open: boolean; gymClass: AnyRow | null; members: AnyRow[]; rows: AnyRow[]; bookingDate: string; selectedMemberId: string; onDateChange: (date: string) => void; onMemberChange: (id: string) => void; onReserve: (event: FormEvent) => void; onCheckIn: (row: AnyRow) => Promise<void>; onCancel: (row: AnyRow) => Promise<void>; onClose: () => void }) {
   return (
     <Modal open={open} title={gymClass ? gymClass.name : "Control de clase"} subtitle={gymClass ? `${gymClass.category} · ${gymClass.weekday} · ${String(gymClass.starts_at).slice(0, 5)} - ${String(gymClass.ends_at).slice(0, 5)}` : ""} onClose={onClose}>
@@ -1021,6 +1143,6 @@ function ConfirmModal({ state, onClose }: { state: ConfirmState; onClose: () => 
   return <Modal open title={state.title} subtitle={state.body} onClose={onClose}><div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button onClick={onClose} className="rounded-2xl border border-zinc-200 px-5 py-3 text-sm font-black">Cancelar</button><button onClick={() => void state.onConfirm().finally(onClose)} className="rounded-2xl bg-red-600 px-5 py-3 text-sm font-black text-white">Confirmar</button></div></Modal>;
 }
 
-function BottomNav({ tab, onSelect }: { tab: Tab; onSelect: (tab: Tab) => void }) {
+function BottomNav({ tab, tabs, onSelect }: { tab: Tab; tabs: { id: Tab; label: string; icon: any }[]; onSelect: (tab: Tab) => void }) {
   return <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/95 px-2 py-2 shadow-[0_-10px_30px_rgba(0,0,0,0.08)] backdrop-blur-xl lg:hidden"><div className="mx-auto grid max-w-md grid-cols-4 gap-1">{tabs.slice(0, 4).map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => onSelect(item.id)} className={`rounded-2xl px-2 py-2 text-[10px] font-black ${tab === item.id ? "bg-[#ffcc00] text-zinc-950" : "text-zinc-500"}`}><Icon className="mx-auto mb-1 h-5 w-5" />{item.label}</button>; })}</div></nav>;
 }
