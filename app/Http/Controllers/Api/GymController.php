@@ -517,7 +517,7 @@ class GymController extends Controller
                 'tenant_id' => $tenantId,
                 'member_id' => $data['member_id'],
                 'membership_id' => $membershipId,
-                'receipt_number' => 'B001-'.str_pad((string) (((int) DB::table('gym_payments')->max('id')) + 1), 5, '0', STR_PAD_LEFT),
+                'receipt_number' => $this->nextPaymentReceiptNumber(),
                 'amount' => $amount,
                 'method' => $data['method'],
                 'proof_path' => $proofPath,
@@ -627,14 +627,27 @@ class GymController extends Controller
     {
         return response()->json($this->scopeTenant(DB::table('gym_training_subscriptions'), $request, 'gym_training_subscriptions')
             ->join('gym_members', 'gym_members.id', '=', 'gym_training_subscriptions.member_id')
-            ->select('gym_training_subscriptions.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_members.dni')
+            ->leftJoin('gym_payments', 'gym_payments.training_subscription_id', '=', 'gym_training_subscriptions.id')
+            ->select(
+                'gym_training_subscriptions.*',
+                DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"),
+                'gym_members.dni',
+                'gym_payments.id as payment_id',
+                'gym_payments.receipt_number as payment_receipt_number',
+                'gym_payments.amount as payment_amount',
+                'gym_payments.method as payment_method_recorded',
+                'gym_payments.status as payment_status',
+                'gym_payments.paid_on as payment_paid_on',
+                'gym_payments.proof_path as payment_proof_path'
+            )
             ->orderByDesc('gym_training_subscriptions.id')
             ->limit(100)
             ->get()
             ->map(function ($subscription) {
                 $subscription->selected_days = json_decode((string) $subscription->selected_days, true) ?: [];
                 $subscription->day_schedules = json_decode((string) ($subscription->day_schedules ?? ''), true) ?: [];
-                $subscription->proof_url = $subscription->proof_path ? Storage::disk('public')->url($subscription->proof_path) : null;
+                $proofPath = $subscription->payment_proof_path ?: $subscription->proof_path;
+                $subscription->proof_url = $proofPath ? Storage::disk('public')->url($proofPath) : null;
 
                 return $subscription;
             })
@@ -659,27 +672,45 @@ class GymController extends Controller
             ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public')
             : null;
 
-        $id = DB::table('gym_training_subscriptions')->insertGetId([
-            'tenant_id' => $tenantId,
-            'member_id' => $data['member_id'],
-            'discipline' => $data['discipline'],
-            'monthly_fee' => $data['monthly_fee'],
-            'starts_on' => $starts->toDateString(),
-            'ends_on' => $starts->copy()->addMonthNoOverflow()->subDay()->toDateString(),
-            'selected_days' => json_encode($selectedDays),
-            'day_schedules' => json_encode(collect($daySchedules)->only($selectedDays)->all()),
-            'preferred_time' => $preferredTime,
-            'sessions_per_week' => $data['sessions_per_week'],
-            'payment_method' => $data['payment_method'],
-            'proof_path' => $proofPath,
-            'status' => 'active',
-            'notes' => $data['notes'] ?? null,
-            'registered_by' => $request->user()?->id,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        return DB::transaction(function () use ($request, $data, $tenantId, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath): JsonResponse {
+            $id = DB::table('gym_training_subscriptions')->insertGetId([
+                'tenant_id' => $tenantId,
+                'member_id' => $data['member_id'],
+                'discipline' => $data['discipline'],
+                'monthly_fee' => $data['monthly_fee'],
+                'starts_on' => $starts->toDateString(),
+                'ends_on' => $starts->copy()->addMonthNoOverflow()->subDay()->toDateString(),
+                'selected_days' => json_encode($selectedDays),
+                'day_schedules' => json_encode(collect($daySchedules)->only($selectedDays)->all()),
+                'preferred_time' => $preferredTime,
+                'sessions_per_week' => $data['sessions_per_week'],
+                'payment_method' => $data['payment_method'],
+                'proof_path' => $proofPath,
+                'status' => 'active',
+                'notes' => $data['notes'] ?? null,
+                'registered_by' => $request->user()?->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
-        return response()->json(DB::table('gym_training_subscriptions')->find($id), 201);
+            $paymentId = DB::table('gym_payments')->insertGetId([
+                'tenant_id' => $tenantId,
+                'member_id' => $data['member_id'],
+                'training_subscription_id' => $id,
+                'receipt_number' => $this->nextPaymentReceiptNumber(),
+                'amount' => $data['monthly_fee'],
+                'method' => $data['payment_method'],
+                'proof_path' => $proofPath,
+                'status' => 'paid',
+                'paid_on' => now()->toDateString(),
+                'notes' => 'Pago de mensualidad de clases',
+                'registered_by' => $request->user()?->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return response()->json(['subscription_id' => $id, 'payment_id' => $paymentId], 201);
+        });
     }
 
     public function updateTrainingSubscription(Request $request, int $subscription): JsonResponse
@@ -687,6 +718,13 @@ class GymController extends Controller
         [$data, $starts, $selectedDays, $daySchedules, $preferredTime] = $this->validatedTrainingSubscription($request);
         abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
         $this->abortIfDuplicateTrainingSubscription($this->defaultTenantId($request), (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules, $subscription);
+
+        $current = $this->scopeTenant(DB::table('gym_training_subscriptions')->where('id', $subscription), $request, 'gym_training_subscriptions')->first();
+        abort_unless($current !== null, 404, 'Mensualidad no encontrada.');
+
+        $proofPath = $data['payment_method'] === 'cash'
+            ? null
+            : ($request->hasFile('proof_photo') ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public') : $current->proof_path);
 
         $payload = [
             'member_id' => $data['member_id'],
@@ -699,17 +737,37 @@ class GymController extends Controller
             'preferred_time' => $preferredTime,
             'sessions_per_week' => $data['sessions_per_week'],
             'payment_method' => $data['payment_method'],
+            'proof_path' => $proofPath,
             'status' => $data['status'] ?? 'active',
             'notes' => $data['notes'] ?? null,
             'updated_at' => now(),
         ];
 
-        if ($data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')) {
-            $payload['proof_path'] = $request->file('proof_photo')?->store('training-subscription-proofs', 'public');
-        }
+        $this->scopeTenant(DB::table('gym_training_subscriptions')->where('id', $subscription), $request, 'gym_training_subscriptions')->update($payload);
 
-        $updated = $this->scopeTenant(DB::table('gym_training_subscriptions')->where('id', $subscription), $request, 'gym_training_subscriptions')->update($payload);
-        abort_unless($updated > 0, 404, 'Mensualidad no encontrada.');
+        $paymentPayload = [
+            'tenant_id' => $this->defaultTenantId($request),
+            'member_id' => $data['member_id'],
+            'training_subscription_id' => $subscription,
+            'amount' => $data['monthly_fee'],
+            'method' => $data['payment_method'],
+            'proof_path' => $proofPath,
+            'status' => ($data['status'] ?? 'active') === 'cancelled' ? 'annulled' : 'paid',
+            'notes' => 'Pago de mensualidad de clases',
+            'registered_by' => $request->user()?->id,
+            'updated_at' => now(),
+        ];
+
+        $payment = DB::table('gym_payments')->where('training_subscription_id', $subscription)->first();
+        if ($payment) {
+            DB::table('gym_payments')->where('id', $payment->id)->update($paymentPayload);
+        } else {
+            DB::table('gym_payments')->insert(array_merge($paymentPayload, [
+                'receipt_number' => $this->nextPaymentReceiptNumber(),
+                'paid_on' => now()->toDateString(),
+                'created_at' => now(),
+            ]));
+        }
 
         return response()->json(DB::table('gym_training_subscriptions')->find($subscription));
     }
@@ -721,6 +779,11 @@ class GymController extends Controller
             'updated_at' => now(),
         ]);
         abort_unless($updated > 0, 404, 'Mensualidad no encontrada.');
+        DB::table('gym_payments')->where('training_subscription_id', $subscription)->update([
+            'status' => 'annulled',
+            'notes' => 'Mensualidad cancelada',
+            'updated_at' => now(),
+        ]);
 
         return response()->json(['ok' => true, 'message' => 'Mensualidad cancelada correctamente.']);
     }
@@ -759,6 +822,11 @@ class GymController extends Controller
         }
 
         return [$data, $starts, $selectedDays, $daySchedules, (string) (($daySchedules[$selectedDays[0]]['start'] ?? '07:00'))];
+    }
+
+    private function nextPaymentReceiptNumber(): string
+    {
+        return 'B001-'.str_pad((string) (((int) DB::table('gym_payments')->max('id')) + 1), 5, '0', STR_PAD_LEFT);
     }
 
     private function abortIfDuplicateTrainingSubscription(?int $tenantId, int $memberId, string $discipline, string $startsOn, array $selectedDays, array $daySchedules, ?int $ignoreId = null): void
@@ -1125,3 +1193,4 @@ class GymController extends Controller
         };
     }
 }
+

@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { Activity, Bell, CalendarDays, CreditCard, Dumbbell, Edit3, LogOut, Menu, Plus, Search, ShieldCheck, Trash2, Users, Wrench, X } from "lucide-react";
+import { Activity, Bell, CalendarDays, CreditCard, Dumbbell, Edit3, Eye, LogOut, Menu, Plus, Search, ShieldCheck, Trash2, Users, Wrench, X } from "lucide-react";
 import { httpClient } from "../http/client";
 import { useAuth } from "../context/AuthContext";
 
@@ -351,6 +351,7 @@ export function GymPage() {
   const [classBookingMemberId, setClassBookingMemberId] = useState("");
   const [trainingSubscriptionForm, setTrainingSubscriptionForm] = useState<AnyRow>(emptyTrainingSubscriptionForm);
   const [trainingSubscriptionModalOpen, setTrainingSubscriptionModalOpen] = useState(false);
+  const [trainingSubscriptionDetail, setTrainingSubscriptionDetail] = useState<AnyRow | null>(null);
   const [editingTrainingSubscriptionId, setEditingTrainingSubscriptionId] = useState<number | null>(null);
   const [trainingSubscriptionSaving, setTrainingSubscriptionSaving] = useState(false);
   const [editingClassId, setEditingClassId] = useState<number | null>(null);
@@ -723,9 +724,14 @@ export function GymPage() {
       selected_days: subscription.selected_days ?? [],
       day_schedules: subscription.day_schedules ?? {},
       sessions_per_week: String(subscription.sessions_per_week ?? (subscription.selected_days?.length || 1)),
+      proof_url: subscription.proof_url ?? "",
       proof_photo: null,
     });
     setTrainingSubscriptionModalOpen(true);
+  }
+
+  function openTrainingSubscriptionDetail(subscription: AnyRow) {
+    setTrainingSubscriptionDetail(subscription);
   }
 
   function confirmDeleteTrainingSubscription(subscription: AnyRow) {
@@ -819,7 +825,7 @@ export function GymPage() {
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
           {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} /></Module> : null}
-          {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDelete={confirmDeleteTrainingSubscription} /> : null}
+          {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos."><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} /></Module> : null}
           {tab === "finance" ? <Module title="Caja" subtitle="Pagos recibidos y gastos operativos." onNew={() => setExpenseModalOpen(true)} newLabel="Registrar gasto"><DataTable title="Pagos recibidos" rows={payments} columns={["receipt_number", "member_name", "amount", "method", "paid_on", "proof_url", "status"]} /></Module> : null}
           {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} /> : null}
@@ -834,6 +840,7 @@ export function GymPage() {
       <ClassModal open={classModalOpen} editing={Boolean(editingClassId)} form={classForm} branches={branches} onChange={setClassForm} onClose={() => setClassModalOpen(false)} onSubmit={saveClass} />
       <ClassDetailModal open={classDetailOpen} gymClass={selectedClass} members={members} rows={classBookings} bookingDate={classBookingDate} selectedMemberId={classBookingMemberId} onDateChange={(date) => { setClassBookingDate(date); void reloadClassBookings(date); }} onMemberChange={setClassBookingMemberId} onReserve={reserveClass} onCheckIn={checkInClassBooking} onCancel={cancelClassBooking} onClose={() => setClassDetailOpen(false)} />
       <TrainingSubscriptionModal open={trainingSubscriptionModalOpen} editing={Boolean(editingTrainingSubscriptionId)} form={trainingSubscriptionForm} members={members} onCreateMember={openTrainingMemberModal} onChange={setTrainingSubscriptionForm} onClose={() => { setEditingTrainingSubscriptionId(null); setTrainingSubscriptionModalOpen(false); }} onSubmit={saveTrainingSubscription} />
+      <TrainingSubscriptionDetailModal subscription={trainingSubscriptionDetail} onClose={() => setTrainingSubscriptionDetail(null)} onEdit={(subscription) => { setTrainingSubscriptionDetail(null); openEditTrainingSubscription(subscription); }} />
       <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => { setMemberModalContext("general"); setMemberModalOpen(false); }} onSubmit={saveMember} />
       <ConfirmModal state={confirm} onClose={() => setConfirm(null)} />
     </div>
@@ -868,7 +875,7 @@ function Module({ title, subtitle, children, onNew, newLabel }: { title: string;
   );
 }
 
-function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscription, onEdit, onDelete }: { subscriptions: AnyRow[]; viewMode: ClassViewMode; onViewModeChange: (mode: ClassViewMode) => void; onNewSubscription: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void }) {
+function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscription, onEdit, onDetail, onDelete }: { subscriptions: AnyRow[]; viewMode: ClassViewMode; onViewModeChange: (mode: ClassViewMode) => void; onNewSubscription: () => void; onEdit: (row: AnyRow) => void; onDetail: (row: AnyRow) => void; onDelete: (row: AnyRow) => void }) {
   const weekdays = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
   const [statusFilter, setStatusFilter] = useState("active");
   const filteredSubscriptions = statusFilter === "all" ? subscriptions : subscriptions.filter((item) => item.status === statusFilter);
@@ -909,13 +916,13 @@ function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscri
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7">
             {monthDays.map((day) => {
               const dayItems = scheduleItems.filter((item) => item.weekday === day.weekday);
-              return <div key={day.iso} className={`min-h-36 rounded-2xl border p-3 ${day.isToday ? "border-[#ffcc00] bg-yellow-50" : "border-zinc-200 bg-zinc-50"}`}><div className="mb-2 flex items-center justify-between"><span className="text-xs font-black uppercase text-zinc-500">{day.weekdayShort}</span><span className="text-lg font-black">{day.day}</span></div><div className="space-y-2">{dayItems.slice(0, 4).map((item) => <button key={item.id} onClick={() => onEdit(item.source)} className="block w-full rounded-xl border border-white bg-white p-2 text-left shadow-sm"><span className="block truncate text-xs font-black text-zinc-950">{String(item.starts_at).slice(0, 5)} · {item.member_name}</span><span className="block truncate text-[11px] text-zinc-500">{item.discipline} · {String(item.ends_at).slice(0, 5)}</span></button>)}</div></div>;
+              return <div key={day.iso} className={`min-h-36 rounded-2xl border p-3 ${day.isToday ? "border-[#ffcc00] bg-yellow-50" : "border-zinc-200 bg-zinc-50"}`}><div className="mb-2 flex items-center justify-between"><span className="text-xs font-black uppercase text-zinc-500">{day.weekdayShort}</span><span className="text-lg font-black">{day.day}</span></div><div className="space-y-2">{dayItems.slice(0, 4).map((item) => <button key={item.id} onClick={() => onDetail(item.source)} className="block w-full rounded-xl border border-white bg-white p-2 text-left shadow-sm"><span className="block truncate text-xs font-black text-zinc-950">{String(item.starts_at).slice(0, 5)} · {item.member_name}</span><span className="block truncate text-[11px] text-zinc-500">{item.discipline} · {String(item.ends_at).slice(0, 5)}</span></button>)}</div></div>;
             })}
           </div>
         </div>
       ) : null}
 
-      {viewMode === "semana" ? <WeeklySchedule classes={scheduleItems} weekdays={weekdays} onEdit={(item) => onEdit(item.source ?? item)} /> : null}
+      {viewMode === "semana" ? <WeeklySchedule classes={scheduleItems} weekdays={weekdays} onEdit={(item) => onEdit(item.source ?? item)} onDetail={(item) => onDetail(item.source ?? item)} /> : null}
 
 
       {viewMode === "tabla" ? (
@@ -930,14 +937,14 @@ function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscri
               <option value="all">Todas</option>
             </select>
           </div>
-          <DataTable title="Mensualidades de entrenamiento" rows={filteredSubscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "selected_days", "day_schedules", "payment_method", "status"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
+          <DataTable title="Mensualidades de entrenamiento" rows={filteredSubscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "selected_days", "day_schedules", "payment_method", "status"]} action={(row) => <ActionButtons onDetail={() => onDetail(row)} onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
         </div>
       ) : null}
     </div>
   );
 }
 
-function WeeklySchedule({ classes, weekdays, onEdit }: { classes: AnyRow[]; weekdays: string[]; onEdit: (row: AnyRow) => void }) {
+function WeeklySchedule({ classes, weekdays, onEdit, onDetail }: { classes: AnyRow[]; weekdays: string[]; onEdit: (row: AnyRow) => void; onDetail: (row: AnyRow) => void }) {
   const height = (weeklyEndHour - weeklyStartHour) * weeklyHourHeight;
 
   return (
@@ -980,6 +987,7 @@ function WeeklySchedule({ classes, weekdays, onEdit }: { classes: AnyRow[]; week
                           <p className="truncate text-[11px] text-zinc-500">{gymClass.room ?? "Horario"} · {gymClass.trainer_name ?? "Mensual"}</p>
                         </div>
                         <div className="mt-auto flex flex-wrap gap-1 pt-2">
+                          <IconButton title="Ver detalles" onClick={() => onDetail(gymClass)} className="h-8 w-8 bg-white text-zinc-950 ring-1 ring-zinc-200"><Eye className="h-3.5 w-3.5" /></IconButton>
                           <IconButton title="Editar" onClick={() => onEdit(gymClass)} className="h-8 w-8 bg-[#ffcc00] text-zinc-950"><Edit3 className="h-3.5 w-3.5" /></IconButton>
                         </div>
                       </div>
@@ -995,8 +1003,8 @@ function WeeklySchedule({ classes, weekdays, onEdit }: { classes: AnyRow[]; week
   );
 }
 
-function ActionButtons({ onEdit, onDelete, extra }: { onEdit: () => void; onDelete: () => void; extra?: ReactNode }) {
-  return <div className="flex flex-wrap justify-end gap-2">{extra}<IconButton title="Editar" onClick={onEdit} className="bg-zinc-950 text-white"><Edit3 className="h-4 w-4" /></IconButton><IconButton title="Eliminar" onClick={onDelete} className="bg-red-50 text-red-700 ring-1 ring-red-100"><Trash2 className="h-4 w-4" /></IconButton></div>;
+function ActionButtons({ onEdit, onDelete, onDetail, extra }: { onEdit: () => void; onDelete: () => void; onDetail?: () => void; extra?: ReactNode }) {
+  return <div className="flex flex-wrap justify-end gap-2">{extra}{onDetail ? <IconButton title="Ver detalles" onClick={onDetail} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><Eye className="h-4 w-4" /></IconButton> : null}<IconButton title="Editar" onClick={onEdit} className="bg-zinc-950 text-white"><Edit3 className="h-4 w-4" /></IconButton><IconButton title="Eliminar" onClick={onDelete} className="bg-red-50 text-red-700 ring-1 ring-red-100"><Trash2 className="h-4 w-4" /></IconButton></div>;
 }
 
 function IconButton({ title, onClick, className, children }: { title: string; onClick: () => void; className: string; children: ReactNode }) {
@@ -1261,6 +1269,58 @@ function ClassDetailModal({ open, gymClass, members, rows, bookingDate, selected
   );
 }
 
+function TrainingSubscriptionDetailModal({ subscription, onClose, onEdit }: { subscription: AnyRow | null; onClose: () => void; onEdit: (subscription: AnyRow) => void }) {
+  if (!subscription) return null;
+  const paymentMethod = subscription.payment_method_recorded ?? subscription.payment_method;
+  const schedules = subscription.day_schedules && typeof subscription.day_schedules === "object" ? Object.entries(subscription.day_schedules as Record<string, { start?: string; end?: string }>) : [];
+
+  return (
+    <Modal open title="Detalle de mensualidad" subtitle={`${subscription.member_name ?? "Socio"} · ${subscription.discipline ?? "Disciplina"}`} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <MetricCard title="Mensualidad" value={money(subscription.monthly_fee)} yellow />
+          <MetricCard title="Sesiones/semana" value={subscription.sessions_per_week ?? 0} />
+          <MetricCard title="Estado" value={<StatusBadge value={String(subscription.status ?? "active")} />} />
+        </div>
+        <div className="grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-2">
+          <DetailItem label="Socio" value={subscription.member_name} />
+          <DetailItem label="DNI" value={subscription.dni} />
+          <DetailItem label="Disciplina" value={subscription.discipline} />
+          <DetailItem label="Vigencia" value={`${formatDateTime(subscription.starts_on)} - ${formatDateTime(subscription.ends_on)}`} />
+          <DetailItem label="Días" value={Array.isArray(subscription.selected_days) ? subscription.selected_days.join(", ") : "-"} />
+          <DetailItem label="Medio de pago" value={cellTranslations.payment_method[String(paymentMethod)] ?? paymentMethod} />
+          <DetailItem label="Comprobante" value={subscription.payment_receipt_number ?? "Generado al registrar la mensualidad"} />
+          <DetailItem label="Estado del pago" value={<StatusBadge value={String(subscription.payment_status ?? "paid")} />} />
+        </div>
+        <div className="rounded-3xl border border-zinc-200 bg-white p-4">
+          <h3 className="text-sm font-black uppercase tracking-wide text-zinc-500">Horarios contratados</h3>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {schedules.length === 0 ? <p className="text-sm font-semibold text-zinc-500">Sin horarios registrados.</p> : schedules.map(([day, range]) => <div key={day} className="rounded-2xl bg-zinc-50 p-3 text-sm"><b>{day}</b><p className="font-semibold text-zinc-600">{range.start ?? "--:--"} - {range.end ?? "--:--"}</p></div>)}
+          </div>
+        </div>
+        <div className="rounded-3xl border border-zinc-200 bg-white p-4">
+          <h3 className="text-sm font-black uppercase tracking-wide text-zinc-500">Comprobante de pago</h3>
+          {subscription.proof_url ? (
+            <div className="mt-3 space-y-3">
+              <a href={subscription.proof_url} target="_blank" rel="noreferrer" className="inline-flex rounded-2xl bg-[#ffcc00] px-4 py-2 text-sm font-black text-zinc-950">Abrir comprobante</a>
+              <img src={subscription.proof_url} alt="Comprobante de pago" className="max-h-80 rounded-2xl border border-zinc-200 object-contain" />
+            </div>
+          ) : <p className="mt-2 text-sm font-semibold text-zinc-500">Sin foto de comprobante. En efectivo no se solicita captura.</p>}
+        </div>
+        {subscription.notes ? <div className="rounded-3xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-600"><b>Notas:</b> {subscription.notes}</div> : null}
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} className="rounded-2xl border border-zinc-200 px-5 py-3 text-sm font-black">Cerrar</button>
+          <button type="button" onClick={() => onEdit(subscription)} className="rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-black text-white">Editar</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DetailItem({ label, value }: { label: string; value: ReactNode }) {
+  return <div><p className="text-[11px] font-black uppercase tracking-wide text-zinc-500">{label}</p><div className="mt-1 text-sm font-black text-zinc-950">{value || "-"}</div></div>;
+}
+
 function TrainingSubscriptionModal({ open, editing, form, members, onCreateMember, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; members: AnyRow[]; onCreateMember: () => void; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
   const weekdays = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
   const selectedDays: string[] = form.selected_days ?? [];
@@ -1340,7 +1400,7 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
             </div>
           ) : null}
         </div>
-        <PaymentFields method={form.payment_method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, payment_method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <PaymentFields method={form.payment_method ?? "cash"} file={form.proof_photo} existingProofUrl={form.proof_url} onMethodChange={(value) => onChange({ ...form, payment_method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
         <FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Registrar mensualidad"} />
       </form>
@@ -1356,7 +1416,7 @@ function RequiredLabel({ children, required = true }: { children: ReactNode; req
   return <span>{children}{required ? <span className="ml-1 text-red-600">*</span> : null}</span>;
 }
 
-function PaymentFields({ method, file, onMethodChange, onFileChange }: { method: string; file: File | null; onMethodChange: (value: string) => void; onFileChange: (file: File | null) => void }) {
+function PaymentFields({ method, file, existingProofUrl, onMethodChange, onFileChange }: { method: string; file: File | null; existingProofUrl?: string; onMethodChange: (value: string) => void; onFileChange: (file: File | null) => void }) {
   return (
     <div className="grid gap-3">
       <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
@@ -1374,6 +1434,7 @@ function PaymentFields({ method, file, onMethodChange, onFileChange }: { method:
           Foto del comprobante
           <input type="file" accept="image/*" onChange={(event) => onFileChange(event.target.files?.[0] ?? null)} className={fieldClass("w-full file:mr-3 file:rounded-xl file:border-0 file:bg-zinc-950 file:px-3 file:py-2 file:text-xs file:font-black file:text-white")} />
           {file ? <span className="text-xs font-semibold normal-case tracking-normal text-zinc-500">{file.name}</span> : null}
+          {!file && existingProofUrl ? <a href={existingProofUrl} target="_blank" rel="noreferrer" className="inline-flex w-fit rounded-xl bg-blue-50 px-3 py-2 text-xs font-black normal-case tracking-normal text-blue-700">Ver comprobante actual</a> : null}
         </label>
       ) : null}
     </div>
