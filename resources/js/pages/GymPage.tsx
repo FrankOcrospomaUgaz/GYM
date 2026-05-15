@@ -879,18 +879,18 @@ function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscri
   return (
     <div className="space-y-4">
       <div className="overflow-hidden rounded-3xl bg-zinc-950 text-white shadow-sm">
-        <div className="flex flex-col gap-4 p-5 lg:flex-row lg:items-end lg:justify-between">
-          <div>
+        <div className="flex flex-col gap-4 p-5 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0 xl:max-w-xl">
             <p className="text-xs font-black uppercase tracking-[0.24em] text-[#ffcc00]">Calendario inteligente</p>
             <h2 className="text-3xl font-black">Clases y mensualidades</h2>
-            <p className="mt-2 max-w-2xl text-sm text-zinc-400">Controla alumnos por mensualidad, disciplina, días y rangos horarios. El calendario se organiza con esos horarios.</p>
+            <p className="mt-2 max-w-2xl text-sm text-zinc-400">Controla alumnos por mensualidad, disciplina, días y rangos horarios.</p>
+          </div>
+          <div className="flex flex-wrap gap-2 xl:justify-center">
+            {(["mes", "semana", "tabla"] as const).map((mode) => <button key={mode} onClick={() => onViewModeChange(mode)} className={`rounded-2xl px-4 py-2 text-sm font-black ${viewMode === mode ? "bg-[#ffcc00] text-zinc-950" : "bg-white/10 text-zinc-300 hover:bg-white/15"}`}>{mode === "mes" ? "Calendario mensual" : mode === "semana" ? "Semana" : "Tabla"}</button>)}
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <button onClick={onNewSubscription} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#ffcc00] px-4 py-3 text-sm font-black text-zinc-950"><Plus className="h-4 w-4" />Nueva mensualidad</button>
           </div>
-        </div>
-        <div className="flex flex-wrap gap-2 border-t border-white/10 px-5 py-4">
-          {(["mes", "semana", "tabla"] as const).map((mode) => <button key={mode} onClick={() => onViewModeChange(mode)} className={`rounded-2xl px-4 py-2 text-sm font-black ${viewMode === mode ? "bg-[#ffcc00] text-zinc-950" : "bg-white/10 text-zinc-300"}`}>{mode === "mes" ? "Calendario mensual" : mode === "semana" ? "Semana" : "Tabla"}</button>)}
         </div>
         <div className="grid grid-cols-2 gap-3 border-t border-white/10 p-5 sm:grid-cols-4">
           <MetricCard title="Mensualidades activas" value={activeSubscriptions.length} yellow />
