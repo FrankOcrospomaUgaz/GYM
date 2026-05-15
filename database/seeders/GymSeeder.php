@@ -15,8 +15,8 @@ class GymSeeder extends Seeder
     {
         $roles = [
             ['name' => 'Administrador', 'slug' => 'admin', 'description' => 'Control total del gimnasio.'],
-            ['name' => 'RecepciÃ³n', 'slug' => 'recepcion', 'description' => 'Clientes, pagos, accesos y reservas.'],
-            ['name' => 'Entrenador', 'slug' => 'entrenador', 'description' => 'Clases, asistencia y seguimiento fÃ­sico.'],
+            ['name' => 'Recepción', 'slug' => 'recepcion', 'description' => 'Clientes, pagos, accesos y reservas.'],
+            ['name' => 'Entrenador', 'slug' => 'entrenador', 'description' => 'Clases, asistencia y seguimiento físico.'],
             ['name' => 'Finanzas', 'slug' => 'finanzas', 'description' => 'Caja, ingresos, gastos y reportes.'],
         ];
 
@@ -46,19 +46,19 @@ class GymSeeder extends Seeder
         DB::table('cargos')->updateOrInsert(['name' => 'Gerente de sede'], ['is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
         DB::table('cargos')->updateOrInsert(['name' => 'Asesor comercial'], ['is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
         DB::table('cargos')->updateOrInsert(['name' => 'Entrenador personal'], ['is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
-        DB::table('areas')->updateOrInsert(['slug' => 'operaciones'], ['name' => 'Operaciones', 'description' => 'AtenciÃ³n, accesos y experiencia del socio.', 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
+        DB::table('areas')->updateOrInsert(['slug' => 'operaciones'], ['name' => 'Operaciones', 'description' => 'Atención, accesos y experiencia del socio.', 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
 
         $tenantModules = [
             'dashboard' => 'Panel',
             'members' => 'Socios',
             'plans' => 'Planes',
-            'memberships' => 'MembresÃ­as',
+            'memberships' => 'Membresías',
             'attendance' => 'Accesos',
             'classes' => 'Clases',
             'finance' => 'Caja',
             'equipment' => 'Equipos',
         ];
-        DB::table('gym_tenants')->updateOrInsert(['slug' => 'gympro-go'], ['name' => 'GymPro GO Demo', 'contact_name' => 'Cliente Demo Fitness', 'contact_email' => 'cliente@gym.local', 'contact_phone' => '999111222', 'plan_name' => 'Profesional', 'billing_status' => 'active', 'primary_color' => '#ffcc00', 'notes' => 'Cliente SaaS demo con operaciÃ³n completa de gimnasio.', 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
+        DB::table('gym_tenants')->updateOrInsert(['slug' => 'gympro-go'], ['name' => 'GymPro GO Demo', 'contact_name' => 'Cliente Demo Fitness', 'contact_email' => 'cliente@gym.local', 'contact_phone' => '999111222', 'plan_name' => 'Profesional', 'billing_status' => 'active', 'primary_color' => '#ffcc00', 'notes' => 'Cliente SaaS demo con operación completa de gimnasio.', 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
         DB::table('gym_tenants')->updateOrInsert(['slug' => 'dojo-mma'], ['name' => 'Dojo MMA Norte', 'contact_name' => 'Profesor de MMA', 'contact_email' => 'dojo@gym.local', 'contact_phone' => '999333444', 'plan_name' => 'Clases', 'billing_status' => 'trial', 'primary_color' => '#ffcc00', 'notes' => 'Cliente orientado a mensualidades y calendario de clases.', 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
         $tenantId = DB::table('gym_tenants')->where('slug', 'gympro-go')->value('id');
         $dojoTenantId = DB::table('gym_tenants')->where('slug', 'dojo-mma')->value('id');
@@ -79,7 +79,7 @@ class GymSeeder extends Seeder
                 'role_id' => $adminRole?->id,
                 'phone' => '999000001',
                 'is_active' => true,
-                'specialty' => 'GestiÃ³n integral',
+                'specialty' => 'Gestión integral',
             ]
         );
 
@@ -93,7 +93,7 @@ class GymSeeder extends Seeder
                 'role_id' => $trainerRole?->id,
                 'phone' => '999000002',
                 'is_active' => true,
-                'specialty' => 'Funcional y musculaciÃ³n',
+                'specialty' => 'Funcional y musculación',
             ]
         );
 
@@ -107,7 +107,7 @@ class GymSeeder extends Seeder
                 'role_id' => $receptionRole?->id,
                 'phone' => '999000003',
                 'is_active' => true,
-                'specialty' => 'AtenciÃ³n al cliente',
+                'specialty' => 'Atención al cliente',
             ]
         );
 
@@ -119,7 +119,7 @@ class GymSeeder extends Seeder
                 'email' => 'central@gym.local',
                 'address' => 'Av. Principal 123',
                 'city' => 'Lima',
-                'opening_hours' => 'Lunes a sÃ¡bado 5:00 AM - 11:00 PM',
+                'opening_hours' => 'Lunes a sábado 5:00 AM - 11:00 PM',
                 'capacity' => 180,
                 'is_active' => true,
                 'created_at' => now(),
@@ -135,7 +135,7 @@ class GymSeeder extends Seeder
                 'email' => 'norte@dojo.local',
                 'address' => 'Av. Los Luchadores 450',
                 'city' => 'Lima',
-                'opening_hours' => 'Lunes a sÃ¡bado 6:00 PM - 10:00 PM',
+                'opening_hours' => 'Lunes a sábado 6:00 PM - 10:00 PM',
                 'capacity' => 70,
                 'is_active' => true,
                 'created_at' => now(),
@@ -158,7 +158,7 @@ class GymSeeder extends Seeder
                 'role_id' => $adminRole?->id,
                 'phone' => '999000010',
                 'is_active' => true,
-                'specialty' => 'AdministraciÃ³n de sede',
+                'specialty' => 'Administración de sede',
             ]
         );
         $dojoAdmin = User::query()->updateOrCreate(
@@ -172,7 +172,7 @@ class GymSeeder extends Seeder
                 'role_id' => $adminRole?->id,
                 'phone' => '999000020',
                 'is_active' => true,
-                'specialty' => 'GestiÃ³n de clases MMA',
+                'specialty' => 'Gestión de clases MMA',
             ]
         );
         DB::table('gym_branch_user')->updateOrInsert(['user_id' => $dojoAdmin->id, 'branch_id' => $dojoBranchId]);
@@ -180,7 +180,7 @@ class GymSeeder extends Seeder
         $plans = [
             ['Smart Fit GO', 'GO', 79.90, 30, 3, 1, true, false, 'Plan mensual con acceso a sala y clases grupales.'],
             ['Black Pro', 'BLACK', 129.90, 30, 5, null, true, true, 'Acceso completo, entrenador inicial y clases premium.'],
-            ['Trimestral Ahorro', 'TRI', 219.00, 90, 7, null, true, false, 'MembresÃ­a trimestral para socios constantes.'],
+            ['Trimestral Ahorro', 'TRI', 219.00, 90, 7, null, true, false, 'Membresía trimestral para socios constantes.'],
             ['Anual Elite', 'ANUAL', 799.00, 365, 10, null, true, true, 'Plan anual con beneficios preferenciales.'],
         ];
 
@@ -204,13 +204,13 @@ class GymSeeder extends Seeder
         }
 
         foreach ([
-            ['Bajar grasa', 'ReducciÃ³n de porcentaje graso y mejora metabÃ³lica.'],
-            ['Ganar masa muscular', 'Hipertrofia, fuerza progresiva y alimentaciÃ³n enfocada.'],
-            ['Tonificar', 'Mejorar composiciÃ³n corporal con entrenamiento mixto.'],
-            ['Mejorar resistencia', 'Cardio, capacidad aerÃ³bica y acondicionamiento.'],
-            ['RehabilitaciÃ³n / movilidad', 'Retorno progresivo, movilidad y prevenciÃ³n de lesiones.'],
-            ['Salud general', 'Actividad fÃ­sica constante y hÃ¡bitos saludables.'],
-            ['PreparaciÃ³n deportiva', 'Objetivos especÃ­ficos por disciplina o competencia.'],
+            ['Bajar grasa', 'Reducción de porcentaje graso y mejora metabólica.'],
+            ['Ganar masa muscular', 'Hipertrofia, fuerza progresiva y alimentación enfocada.'],
+            ['Tonificar', 'Mejorar composición corporal con entrenamiento mixto.'],
+            ['Mejorar resistencia', 'Cardio, capacidad aeróbica y acondicionamiento.'],
+            ['Rehabilitación / movilidad', 'Retorno progresivo, movilidad y prevención de lesiones.'],
+            ['Salud general', 'Actividad física constante y hábitos saludables.'],
+            ['Preparación deportiva', 'Objetivos específicos por disciplina o competencia.'],
         ] as [$name, $description]) {
             DB::table('gym_fitness_goals')->updateOrInsert(
                 ['name' => $name],
@@ -220,10 +220,10 @@ class GymSeeder extends Seeder
 
         $memberRows = [
             ['M-0001', 'Andrea', 'Paredes', '76543210', 'andrea@mail.test', '987111111', 'Bajar grasa y tonificar', 'active'],
-            ['M-0002', 'Luis', 'CÃ¡ceres', '71543210', 'luis@mail.test', '987222222', 'Ganar masa muscular', 'active'],
-            ['M-0003', 'MarÃ­a', 'Quispe', '70543210', 'maria@mail.test', '987333333', 'Mejorar resistencia', 'active'],
+            ['M-0002', 'Luis', 'Cáceres', '71543210', 'luis@mail.test', '987222222', 'Ganar masa muscular', 'active'],
+            ['M-0003', 'María', 'Quispe', '70543210', 'maria@mail.test', '987333333', 'Mejorar resistencia', 'active'],
             ['M-0004', 'Jorge', 'Salazar', '69543210', 'jorge@mail.test', '987444444', 'Retomar entrenamiento', 'inactive'],
-            ['M-0005', 'SofÃ­a', 'Ramos', '68543210', 'sofia@mail.test', '987555555', 'PreparaciÃ³n funcional', 'active'],
+            ['M-0005', 'Sofía', 'Ramos', '68543210', 'sofia@mail.test', '987555555', 'Preparación funcional', 'active'],
         ];
 
         foreach ($memberRows as [$code, $first, $last, $doc, $email, $phone, $goal, $status]) {
@@ -240,7 +240,7 @@ class GymSeeder extends Seeder
                     'phone' => $phone,
                     'birthdate' => Carbon::now()->subYears(rand(22, 42))->subDays(rand(1, 300))->toDateString(),
                     'gender' => rand(0, 1) ? 'F' : 'M',
-                    'address' => 'DirecciÃ³n demo '.$code,
+                    'address' => 'Dirección demo '.$code,
                     'emergency_contact_name' => 'Contacto '.$first,
                     'emergency_contact_phone' => '988'.rand(100000, 999999),
                     'medical_notes' => 'Sin restricciones declaradas.',
@@ -286,7 +286,7 @@ class GymSeeder extends Seeder
                     'method' => $index % 2 === 0 ? 'card' : 'cash',
                     'status' => 'paid',
                     'paid_on' => $starts->toDateString(),
-                    'notes' => 'Pago de membresÃ­a.',
+                    'notes' => 'Pago de membresía.',
                     'registered_by' => $admin->id,
                     'created_at' => now(),
                     'updated_at' => now(),
@@ -311,10 +311,10 @@ class GymSeeder extends Seeder
 
         foreach ([
             ['Funcional HIIT', 'Funcional', 'Intermedio', 'Lunes', '07:00', '07:50', 24, '#ffcc00', 'Sala funcional'],
-            ['Spinning Pro', 'Cardio', 'Todos', 'MiÃ©rcoles', '19:00', '19:45', 20, '#22c55e', 'Sala cycling'],
-            ['MusculaciÃ³n guiada', 'Fuerza', 'Principiante', 'Viernes', '18:00', '19:00', 16, '#0f172a', 'Zona pesas'],
+            ['Spinning Pro', 'Cardio', 'Todos', 'Miércoles', '19:00', '19:45', 20, '#22c55e', 'Sala cycling'],
+            ['Musculación guiada', 'Fuerza', 'Principiante', 'Viernes', '18:00', '19:00', 16, '#0f172a', 'Zona pesas'],
             ['MMA Striking', 'MMA', 'Intermedio', 'Martes', '20:00', '21:20', 18, '#ef4444', 'Tatami'],
-            ['Sparring controlado', 'MMA', 'Avanzado', 'SÃ¡bado', '10:00', '11:30', 12, '#7c3aed', 'Jaula / Tatami'],
+            ['Sparring controlado', 'MMA', 'Avanzado', 'Sábado', '10:00', '11:30', 12, '#7c3aed', 'Jaula / Tatami'],
             ['Brazilian Jiu-Jitsu', 'Grappling', 'Todos', 'Jueves', '20:00', '21:30', 20, '#2563eb', 'Tatami'],
         ] as [$name, $category, $level, $weekday, $startsAt, $endsAt, $capacity, $color, $room]) {
             DB::table('gym_classes')->updateOrInsert(
@@ -364,7 +364,7 @@ class GymSeeder extends Seeder
         );
 
         DB::table('gym_notifications')->updateOrInsert(
-            ['type' => 'membership_expiry', 'title' => 'MembresÃ­as por vencer'],
+            ['type' => 'membership_expiry', 'title' => 'Membresías por vencer'],
             ['tenant_id' => $tenantId, 'body' => 'Hay socios con membresías próximas a vencer. Contactar para renovación.', 'severity' => 'warning', 'user_id' => $admin->id, 'scheduled_for' => now(), 'created_at' => now(), 'updated_at' => now()]
         );
         DB::table('gym_notifications')->updateOrInsert(

@@ -637,19 +637,30 @@ class GymController extends Controller
                 $subscription->proof_url = $subscription->proof_path ? Storage::disk('public')->url($subscription->proof_path) : null;
 
                 return $subscription;
-            }));
+            })
+            ->unique(fn ($subscription) => implode('|', [
+                $subscription->member_id,
+                $subscription->discipline,
+                $subscription->starts_on,
+                json_encode($subscription->selected_days),
+                json_encode($subscription->day_schedules),
+                $subscription->status,
+            ]))
+            ->values());
     }
 
     public function storeTrainingSubscription(Request $request): JsonResponse
     {
         [$data, $starts, $selectedDays, $daySchedules, $preferredTime] = $this->validatedTrainingSubscription($request);
         abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
+        $tenantId = $this->defaultTenantId($request);
+        $this->abortIfDuplicateTrainingSubscription($tenantId, (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules);
         $proofPath = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
             ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public')
             : null;
 
         $id = DB::table('gym_training_subscriptions')->insertGetId([
-            'tenant_id' => $this->defaultTenantId($request),
+            'tenant_id' => $tenantId,
             'member_id' => $data['member_id'],
             'discipline' => $data['discipline'],
             'monthly_fee' => $data['monthly_fee'],
@@ -675,6 +686,7 @@ class GymController extends Controller
     {
         [$data, $starts, $selectedDays, $daySchedules, $preferredTime] = $this->validatedTrainingSubscription($request);
         abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
+        $this->abortIfDuplicateTrainingSubscription($this->defaultTenantId($request), (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules, $subscription);
 
         $payload = [
             'member_id' => $data['member_id'],
@@ -747,6 +759,31 @@ class GymController extends Controller
         }
 
         return [$data, $starts, $selectedDays, $daySchedules, (string) (($daySchedules[$selectedDays[0]]['start'] ?? '07:00'))];
+    }
+
+    private function abortIfDuplicateTrainingSubscription(?int $tenantId, int $memberId, string $discipline, string $startsOn, array $selectedDays, array $daySchedules, ?int $ignoreId = null): void
+    {
+        $query = DB::table('gym_training_subscriptions')
+            ->where('tenant_id', $tenantId)
+            ->where('member_id', $memberId)
+            ->where('discipline', $discipline)
+            ->where('starts_on', $startsOn)
+            ->whereIn('status', ['active', 'inactive']);
+
+        if ($ignoreId !== null) {
+            $query->where('id', '!=', $ignoreId);
+        }
+
+        $normalizedDays = json_encode(array_values($selectedDays));
+        $normalizedSchedules = json_encode(collect($daySchedules)->only($selectedDays)->all());
+        $duplicate = $query->get()->contains(function ($row) use ($normalizedDays, $normalizedSchedules): bool {
+            return (string) $row->selected_days === $normalizedDays
+                && (string) ($row->day_schedules ?? '') === $normalizedSchedules;
+        });
+
+        if ($duplicate) {
+            abort(response()->json(['message' => 'Esta mensualidad ya existe para el socio, disciplina, fecha y horarios seleccionados.'], 422));
+        }
     }
 
     public function storeClass(Request $request): JsonResponse
