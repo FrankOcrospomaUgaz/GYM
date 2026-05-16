@@ -1003,7 +1003,7 @@ class GymController extends Controller
                 'spent_on' => ['required', 'date'],
                 'payment_method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
                 'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
-                'description' => ['nullable', 'string'],
+                'description' => ['required', 'string', 'max:255'],
             ]);
             $data['tenant_id'] = $this->defaultTenantId($request);
             $data['proof_path'] = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
