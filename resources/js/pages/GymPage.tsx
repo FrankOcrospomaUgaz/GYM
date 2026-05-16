@@ -6,11 +6,23 @@ import { useAuth } from "../context/AuthContext";
 type AnyRow = Record<string, any>;
 type Tab = "dashboard" | "members" | "plans" | "memberships" | "attendance" | "classes" | "finance" | "equipment" | "system";
 type ConfirmState = { title: string; body: string; onConfirm: () => Promise<void> } | null;
+type ErrorState = { title: string; message: string; details?: string[] } | null;
 type MemberModalContext = "general" | "training";
 type ClassViewMode = "mes" | "semana" | "tabla";
 
 const classDisciplines = ["MMA", "Sparring", "Box", "Brazilian Jiu-Jitsu", "Muay Thai", "Funcional", "Cardio", "Fuerza", "Yoga"];
 const expenseCategories = ["Alquiler", "Servicios", "Sueldos", "Limpieza", "Mantenimiento", "Equipos", "Marketing", "Internet", "Impuestos", "Software", "Insumos", "Seguridad", "Otros"];
+const validationFieldLabels: Record<string, string> = {
+  member_id: "Socio",
+  discipline: "Disciplina",
+  monthly_fee: "Mensualidad",
+  starts_on: "Fecha de inicio",
+  selected_days: "Días de entrenamiento",
+  day_schedules: "Horarios",
+  payment_method: "Medio de pago",
+  proof_photo: "Foto del comprobante",
+  sessions_per_week: "Sesiones por semana",
+};
 
 const tabs: { id: Tab; label: string; icon: any }[] = [
   { id: "dashboard", label: "Panel", icon: Activity },
@@ -277,6 +289,48 @@ async function appendFormValue(formData: FormData, key: string, value: unknown) 
   formData.append(key, value as string | Blob);
 }
 
+function friendlyErrorMessage(error: unknown) {
+  const response = (error as { response?: { status?: number; data?: AnyRow } })?.response;
+  const data = response?.data ?? {};
+  const details = Object.entries(data.errors ?? {}).flatMap(([field, messages]) => {
+    const label = validationFieldLabels[field] ?? field;
+    const list = Array.isArray(messages) ? messages : [messages];
+    return list.map((message) => translateValidationMessage(label, String(message)));
+  });
+
+  if (details.length > 0) {
+    return {
+      message: "No se pudo guardar la mensualidad porque hay datos pendientes o inválidos.",
+      details,
+    };
+  }
+
+  const rawMessage = String(data.message ?? "");
+  if (rawMessage) return { message: translateGeneralError(rawMessage), details: [] };
+  if (response?.status === 413) return { message: "El comprobante es demasiado pesado. Intente con una imagen más liviana.", details: [] };
+
+  return { message: "Ocurrió un problema inesperado. Revise su conexión e intente nuevamente.", details: [] };
+}
+
+function translateValidationMessage(label: string, message: string) {
+  const lower = message.toLowerCase();
+  if (lower.includes("field is required")) return `${label} es obligatorio.`;
+  if (lower.includes("failed to upload")) return `${label} no se pudo subir. Intente con una imagen JPG o PNG más liviana.`;
+  if (lower.includes("must be an image") || lower.includes("must be a file of type")) return `${label} debe ser una imagen JPG, PNG o WEBP.`;
+  if (lower.includes("may not be greater than")) return `${label} supera el tamaño permitido.`;
+  if (lower.includes("has already been taken") || lower.includes("duplic")) return `${label} ya existe con esos datos.`;
+  return `${label}: ${translateGeneralError(message)}`;
+}
+
+function translateGeneralError(message: string) {
+  return message
+    .replace("The payment method field is required.", "El medio de pago es obligatorio.")
+    .replace("The proof photo failed to upload.", "La foto del comprobante no se pudo subir.")
+    .replace("The proof photo field must be an image.", "La foto del comprobante debe ser una imagen.")
+    .replace("The selected days field is required.", "Debe seleccionar los días de entrenamiento.")
+    .replace("The day schedules field is required.", "Debe configurar los horarios de entrenamiento.");
+}
+
 function nextDateForWeekday(weekday: string) {
   const weekdays = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
   const target = weekdays.indexOf(weekday);
@@ -436,6 +490,7 @@ export function GymPage() {
   const [selectedMember, setSelectedMember] = useState<AnyRow | null>(null);
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
+  const [errorModal, setErrorModal] = useState<ErrorState>(null);
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
 
@@ -819,6 +874,8 @@ export function GymPage() {
   async function saveTrainingSubscription(event: FormEvent) {
     event.preventDefault();
     if (trainingSubscriptionSaving) return;
+    setMessage("");
+    setErrorModal(null);
     setTrainingSubscriptionSaving(true);
     const formData = new FormData();
     try {
@@ -843,6 +900,13 @@ export function GymPage() {
       setClassesViewMode("tabla");
       setMessage(editingTrainingSubscriptionId ? "Mensualidad actualizada correctamente." : "Mensualidad registrada correctamente.");
       await loadAll();
+    } catch (error) {
+      const friendly = friendlyErrorMessage(error);
+      setErrorModal({
+        title: editingTrainingSubscriptionId ? "No se pudo actualizar la mensualidad" : "No se pudo registrar la mensualidad",
+        message: friendly.message,
+        details: friendly.details,
+      });
     } finally {
       setTrainingSubscriptionSaving(false);
     }
@@ -914,6 +978,7 @@ export function GymPage() {
       <TrainingSubscriptionDetailModal subscription={trainingSubscriptionDetail} onClose={() => setTrainingSubscriptionDetail(null)} onEdit={(subscription) => { setTrainingSubscriptionDetail(null); openEditTrainingSubscription(subscription); }} />
       <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => { setMemberModalContext("general"); setMemberModalOpen(false); }} onSubmit={saveMember} />
       <ConfirmModal state={confirm} onClose={() => setConfirm(null)} />
+      <ErrorModal state={errorModal} onClose={() => setErrorModal(null)} />
     </div>
   );
 }
@@ -1581,6 +1646,30 @@ function FormActions({ onClose, submitLabel }: { onClose: () => void; submitLabe
 function ConfirmModal({ state, onClose }: { state: ConfirmState; onClose: () => void }) {
   if (!state) return null;
   return <Modal open title={state.title} subtitle={state.body} onClose={onClose}><div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button onClick={onClose} className="rounded-2xl border border-zinc-200 px-5 py-3 text-sm font-black">Cancelar</button><button onClick={() => void state.onConfirm().finally(onClose)} className="rounded-2xl bg-red-600 px-5 py-3 text-sm font-black text-white">Confirmar</button></div></Modal>;
+}
+
+function ErrorModal({ state, onClose }: { state: ErrorState; onClose: () => void }) {
+  if (!state) return null;
+  return (
+    <Modal open title={state.title} subtitle={state.message} onClose={onClose}>
+      <div className="space-y-4">
+        {state.details?.length ? (
+          <div className="rounded-3xl border border-red-100 bg-red-50 p-4">
+            <p className="text-sm font-black text-red-800">Revisa estos puntos:</p>
+            <ul className="mt-3 space-y-2 text-sm font-semibold text-red-700">
+              {state.details.map((detail) => <li key={detail} className="flex gap-2"><span>•</span><span>{detail}</span></li>)}
+            </ul>
+          </div>
+        ) : null}
+        <div className="rounded-3xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-600">
+          Corrige los datos indicados y vuelve a intentar. La información del formulario no se ha perdido.
+        </div>
+        <div className="flex justify-end">
+          <button onClick={onClose} className="rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-black text-white">Entendido</button>
+        </div>
+      </div>
+    </Modal>
+  );
 }
 
 function BottomNav({ tab, tabs, onSelect }: { tab: Tab; tabs: { id: Tab; label: string; icon: any }[]; onSelect: (tab: Tab) => void }) {
