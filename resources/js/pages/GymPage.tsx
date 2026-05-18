@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { Activity, AlertTriangle, Bell, CalendarDays, CreditCard, Dumbbell, Edit3, Eye, LogOut, Menu, MessageCircle, Plus, QrCode, Search, ShieldCheck, Trash2, Trophy, Users, Wrench, X } from "lucide-react";
+import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit3, Eye, IdCard, LayoutDashboard, LogOut, Menu, MessageCircle, PackageCheck, Plus, QrCode, Search, ShieldCheck, Trash2, Trophy, Users, X } from "lucide-react";
 import { httpClient } from "../http/client";
 import { useAuth } from "../context/AuthContext";
 
@@ -26,14 +26,14 @@ const validationFieldLabels: Record<string, string> = {
 };
 
 const tabs: { id: Tab; label: string; icon: any }[] = [
-  { id: "dashboard", label: "Panel", icon: Activity },
+  { id: "dashboard", label: "Panel", icon: LayoutDashboard },
   { id: "members", label: "Socios", icon: Users },
-  { id: "plans", label: "Planes", icon: CreditCard },
-  { id: "memberships", label: "Membresías", icon: CreditCard },
-  { id: "attendance", label: "Accesos", icon: ShieldCheck },
+  { id: "plans", label: "Planes", icon: IdCard },
+  { id: "memberships", label: "Membresías", icon: BadgeCheck },
+  { id: "attendance", label: "Accesos", icon: QrCode },
   { id: "classes", label: "Clases", icon: CalendarDays },
-  { id: "finance", label: "Caja", icon: Bell },
-  { id: "equipment", label: "Equipos", icon: Wrench },
+  { id: "finance", label: "Caja", icon: Banknote },
+  { id: "equipment", label: "Equipos", icon: PackageCheck },
   { id: "system", label: "Sistema SaaS", icon: ShieldCheck },
 ];
 
@@ -544,11 +544,14 @@ export function GymPage() {
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [errorModal, setErrorModal] = useState<ErrorState>(null);
+  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
+  const [browserNotificationsEnabled, setBrowserNotificationsEnabled] = useState(() => typeof Notification !== "undefined" && Notification.permission === "granted");
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
 
   const activeMembers = useMemo(() => members.filter((member) => member.status === "active"), [members]);
   const cashMovements = useMemo(() => buildCashMovements(payments, expenses), [payments, expenses]);
+  const unreadNotifications = useMemo(() => notifications.filter((item) => !item.read_at), [notifications]);
   void classes;
   const visibleTabs = useMemo(() => {
     if (user?.is_superadmin) return tabs;
@@ -600,6 +603,45 @@ export function GymPage() {
   useEffect(() => {
     void loadAll();
   }, []);
+
+  useEffect(() => {
+    if (!notifications.length || typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const notifiedKey = `gym-notified-${user?.id ?? "guest"}`;
+    const notifiedIds = new Set(JSON.parse(localStorage.getItem(notifiedKey) ?? "[]") as number[]);
+    const pending = notifications.filter((item) => !item.read_at && !notifiedIds.has(Number(item.id))).slice(0, 3);
+    pending.forEach((item) => {
+      new Notification(item.title ?? "Nueva notificación", {
+        body: item.body ?? "Tienes una nueva alerta del gimnasio.",
+        icon: "/favicon.ico",
+        tag: `gym-${item.id}`,
+      });
+      notifiedIds.add(Number(item.id));
+    });
+    if (pending.length) localStorage.setItem(notifiedKey, JSON.stringify(Array.from(notifiedIds).slice(-100)));
+  }, [notifications, user?.id]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      httpClient.get("/api/gym/notifications").then((response) => setNotifications(response.data)).catch(() => undefined);
+    }, 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  async function enableBrowserNotifications() {
+    if (typeof Notification === "undefined") {
+      setErrorModal({ title: "Notificaciones no disponibles", message: "Este navegador no permite notificaciones en este dispositivo." });
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setBrowserNotificationsEnabled(permission === "granted");
+    setMessage(permission === "granted" ? "Notificaciones del navegador activadas." : "No se activaron las notificaciones del navegador.");
+  }
+
+  async function markNotificationsAsRead() {
+    await httpClient.post("/api/gym/notifications/read");
+    const response = await httpClient.get("/api/gym/notifications");
+    setNotifications(response.data);
+  }
 
   function openNewMember() {
     setEditingMemberId(null);
@@ -1061,6 +1103,13 @@ export function GymPage() {
               <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => event.key === "Enter" && loadAll()} placeholder="Buscar socio, DNI o código" className="h-11 min-w-0 flex-1 border-0 bg-transparent px-3 text-sm outline-none" />
               <button onClick={() => void loadAll()} className="rounded-xl bg-zinc-950 px-3 py-2 text-xs font-bold text-white">Buscar</button>
             </div>
+            <div className="relative">
+              <button type="button" onClick={() => setNotificationPanelOpen((open) => !open)} className="relative grid h-11 w-11 place-items-center rounded-2xl bg-zinc-950 text-white shadow-sm" aria-label="Ver notificaciones">
+                <Bell className="h-5 w-5" />
+                {unreadNotifications.length ? <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[#ffcc00] px-1 text-[10px] font-black text-zinc-950">{unreadNotifications.length}</span> : null}
+              </button>
+              {notificationPanelOpen ? <NotificationPanel notifications={notifications} browserEnabled={browserNotificationsEnabled} onEnableBrowser={() => void enableBrowserNotifications()} onMarkRead={() => void markNotificationsAsRead()} onClose={() => setNotificationPanelOpen(false)} /> : null}
+            </div>
           </div>
           {message ? <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-700">{message}</div> : null}
         </header>
@@ -1192,6 +1241,43 @@ function MetricCard({ title, value, yellow, dark }: { title: string; value: Reac
   return <div className={`rounded-2xl p-4 ${yellow ? "bg-[#ffcc00] text-zinc-950" : dark ? "bg-zinc-950 text-white" : "bg-white text-zinc-950 ring-1 ring-zinc-200"}`}><p className="text-sm font-bold">{title}</p><p className="text-3xl font-black">{value}</p></div>;
 }
 
+function NotificationPanel({ notifications, browserEnabled, onEnableBrowser, onMarkRead, onClose }: { notifications: AnyRow[]; browserEnabled: boolean; onEnableBrowser: () => void; onMarkRead: () => void; onClose: () => void }) {
+  const unread = notifications.filter((item) => !item.read_at).length;
+  return (
+    <div className="absolute right-0 top-14 z-40 w-[min(92vw,420px)] overflow-hidden rounded-3xl border border-zinc-200 bg-white shadow-2xl">
+      <div className="flex items-start justify-between gap-3 border-b border-zinc-100 p-4">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.2em] text-[#d9a900]">Centro de alertas</p>
+          <h3 className="text-xl font-black">Notificaciones</h3>
+          <p className="text-xs font-semibold text-zinc-500">{unread} sin leer · actualización automática</p>
+        </div>
+        <button onClick={onClose} className="rounded-xl bg-zinc-100 p-2 text-zinc-600"><X className="h-4 w-4" /></button>
+      </div>
+      <div className="grid gap-2 border-b border-zinc-100 p-3 sm:grid-cols-2">
+        <button type="button" onClick={onEnableBrowser} className={`rounded-2xl px-3 py-2 text-xs font-black ${browserEnabled ? "bg-emerald-50 text-emerald-700" : "bg-[#ffcc00] text-zinc-950"}`}>{browserEnabled ? "Navegador activo" : "Activar navegador"}</button>
+        <button type="button" onClick={onMarkRead} className="rounded-2xl bg-zinc-950 px-3 py-2 text-xs font-black text-white">Marcar leídas</button>
+      </div>
+      <div className="max-h-[420px] overflow-y-auto p-3">
+        {notifications.length === 0 ? <p className="rounded-2xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-500">Sin notificaciones por ahora.</p> : null}
+        <div className="space-y-2">
+          {notifications.map((item) => (
+            <article key={item.id} className={`rounded-2xl border p-3 ${item.read_at ? "border-zinc-100 bg-zinc-50" : "border-yellow-200 bg-yellow-50"}`}>
+              <div className="flex items-start gap-3">
+                <div className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${item.read_at ? "bg-zinc-300" : "bg-[#ffcc00]"}`} />
+                <div className="min-w-0">
+                  <p className="font-black text-zinc-950">{item.title}</p>
+                  <p className="mt-1 text-sm font-semibold text-zinc-600">{item.body}</p>
+                  <p className="mt-2 text-[11px] font-black uppercase tracking-wide text-zinc-400">{formatDateTime(item.created_at ?? item.scheduled_for)}</p>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Module({ title, subtitle, children, onNew, newLabel }: { title: string; subtitle: string; children: ReactNode; onNew?: () => void; newLabel?: string }) {
   return (
     <div className="space-y-4">
@@ -1283,7 +1369,7 @@ function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscri
         </div>
       ) : null}
 
-      {viewMode === "semana" ? <WeeklySchedule classes={scheduleItems} weekdays={weekdays} onEdit={(item) => onEdit(item.source ?? item)} onDetail={(item) => onDetail(item.source ?? item)} /> : null}
+      {viewMode === "semana" ? <WeeklySchedule classes={scheduleItems} weekdays={weekdays} onEdit={(item) => onEdit(item.source ?? item)} /> : null}
 
 
       {viewMode === "tabla" ? (
@@ -1305,7 +1391,7 @@ function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscri
   );
 }
 
-function WeeklySchedule({ classes, weekdays, onEdit, onDetail }: { classes: AnyRow[]; weekdays: string[]; onEdit: (row: AnyRow) => void; onDetail: (row: AnyRow) => void }) {
+function WeeklySchedule({ classes, weekdays, onEdit }: { classes: AnyRow[]; weekdays: string[]; onEdit: (row: AnyRow) => void }) {
   const height = (weeklyEndHour - weeklyStartHour) * weeklyHourHeight;
 
   return (
@@ -1339,7 +1425,7 @@ function WeeklySchedule({ classes, weekdays, onEdit, onDetail }: { classes: AnyR
                   {Array.from({ length: weeklyEndHour - weeklyStartHour + 1 }, (_, index) => <div key={index} className="absolute left-0 right-0 border-t border-zinc-100" style={{ top: index * weeklyHourHeight }} />)}
                   {dayClasses.length === 0 ? <div className="absolute inset-x-3 top-4 rounded-2xl bg-zinc-50 p-3 text-center text-xs font-black text-zinc-400">Sin clases</div> : null}
                   {dayClasses.map((gymClass, index) => (
-                    <article key={gymClass.id} className="absolute overflow-hidden rounded-2xl border-l-4 bg-white p-2 shadow-[0_10px_24px_rgba(0,0,0,0.10)] ring-1 ring-zinc-200" style={weeklyClassStyle(gymClass, index)}>
+                    <button key={gymClass.id} type="button" onClick={() => onEdit(gymClass)} className="absolute overflow-hidden rounded-2xl border-l-4 bg-white p-2 text-left shadow-[0_10px_24px_rgba(0,0,0,0.10)] ring-1 ring-zinc-200 transition hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-[#ffcc00]" style={weeklyClassStyle(gymClass, index)}>
                       <div className="flex h-full flex-col">
                         <div className="min-w-0">
                           <p className="truncate text-[11px] font-black text-zinc-500">{String(gymClass.starts_at).slice(0, 5)} - {String(gymClass.ends_at).slice(0, 5)}</p>
@@ -1347,12 +1433,8 @@ function WeeklySchedule({ classes, weekdays, onEdit, onDetail }: { classes: AnyR
                           <p className="truncate text-[11px] font-bold text-zinc-500">{gymClass.category} · {gymClass.level}</p>
                           <p className="truncate text-[11px] text-zinc-500">{gymClass.room ?? "Horario"} · {gymClass.trainer_name ?? "Mensual"}</p>
                         </div>
-                        <div className="mt-auto flex flex-wrap gap-1 pt-2">
-                          <IconButton title="Ver detalles" onClick={() => onDetail(gymClass)} className="h-8 w-8 bg-white text-zinc-950 ring-1 ring-zinc-200"><Eye className="h-3.5 w-3.5" /></IconButton>
-                          <IconButton title="Editar" onClick={() => onEdit(gymClass)} className="h-8 w-8 bg-[#ffcc00] text-zinc-950"><Edit3 className="h-3.5 w-3.5" /></IconButton>
-                        </div>
                       </div>
-                    </article>
+                    </button>
                   ))}
                 </section>
               );
@@ -1679,7 +1761,7 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
           })}
         </div>
       </div>
-      <DataTable title="Usuarios del sistema" rows={data.users ?? []} columns={["name", "email", "tenant_name", "branch_name", "role_name", "is_superadmin", "is_active"]} />
+      <DataTable title="Usuarios del sistema" rows={data.users ?? []} columns={["name", "email", "password", "tenant_name", "branch_name", "role_name", "is_superadmin", "is_active"]} />
     </Module>
   );
 }

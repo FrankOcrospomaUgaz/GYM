@@ -1105,6 +1105,16 @@ class GymController extends Controller
         return response()->json($this->scopeTenant(DB::table('gym_notifications'), $request, 'gym_notifications')->orderByRaw('read_at is not null')->latest()->limit(50)->get());
     }
 
+    public function markNotificationsRead(Request $request): JsonResponse
+    {
+        $this->scopeTenant(DB::table('gym_notifications')->whereNull('read_at'), $request, 'gym_notifications')->update([
+            'read_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return response()->json(['ok' => true]);
+    }
+
     public function saas(Request $request): JsonResponse
     {
         $this->requireSystemAdmin($request);

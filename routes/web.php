@@ -52,6 +52,7 @@ Route::middleware('auth')->group(function (): void {
         Route::delete('equipment/{equipment}', [GymController::class, 'destroyEquipment']);
         Route::match(['get', 'post'], 'expenses', [GymController::class, 'expenses']);
         Route::get('notifications', [GymController::class, 'notifications']);
+        Route::post('notifications/read', [GymController::class, 'markNotificationsRead']);
         Route::get('saas', [GymController::class, 'saas']);
         Route::post('saas/tenants', [GymController::class, 'storeTenant']);
         Route::put('saas/tenants/{tenant}', [GymController::class, 'updateTenant']);
