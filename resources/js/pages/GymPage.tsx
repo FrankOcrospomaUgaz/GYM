@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { Activity, Bell, CalendarDays, CreditCard, Dumbbell, Edit3, Eye, LogOut, Menu, Plus, Search, ShieldCheck, Trash2, Users, Wrench, X } from "lucide-react";
+import { Activity, AlertTriangle, Bell, CalendarDays, CreditCard, Dumbbell, Edit3, Eye, LogOut, Menu, MessageCircle, Plus, QrCode, Search, ShieldCheck, Trash2, Trophy, Users, Wrench, X } from "lucide-react";
 import { httpClient } from "../http/client";
 import { useAuth } from "../context/AuthContext";
 
@@ -443,6 +443,42 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
   ].sort((a, b) => String(b.movement_date ?? "").localeCompare(String(a.movement_date ?? "")));
 }
 
+function dateOnly(value: unknown) {
+  if (!value) return null;
+  const date = new Date(String(value).includes("T") ? String(value) : `${String(value)}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function daysUntil(value: unknown) {
+  const date = dateOnly(value);
+  if (!date) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.ceil((date.getTime() - today.getTime()) / 86_400_000);
+}
+
+function memberFullName(member: AnyRow) {
+  return [member.first_name, member.last_name].filter(Boolean).join(" ").trim() || member.member_name || "Socio";
+}
+
+function whatsappUrl(phone: unknown, message: string) {
+  const digits = String(phone ?? "").replace(/\D/g, "");
+  const normalized = digits.length === 9 ? `51${digits}` : digits;
+  return normalized ? `https://wa.me/${normalized}?text=${encodeURIComponent(message)}` : "";
+}
+
+function memberActiveMembership(member: AnyRow, memberships: AnyRow[]) {
+  return memberships
+    .filter((membership) => Number(membership.member_id) === Number(member.id) && membership.status === "active")
+    .sort((a, b) => String(b.ends_on).localeCompare(String(a.ends_on)))[0] ?? null;
+}
+
+function lastAttendanceForMember(member: AnyRow, attendance: AnyRow[]) {
+  return attendance
+    .filter((item) => Number(item.member_id) === Number(member.id))
+    .sort((a, b) => String(b.checked_in_at).localeCompare(String(a.checked_in_at)))[0] ?? null;
+}
+
 export function GymPage() {
   const { user, logout } = useAuth();
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -453,6 +489,7 @@ export function GymPage() {
   const [branches, setBranches] = useState<AnyRow[]>([]);
   const [fitnessGoals, setFitnessGoals] = useState<AnyRow[]>([]);
   const [memberMemberships, setMemberMemberships] = useState<AnyRow[]>([]);
+  const [credentialMember, setCredentialMember] = useState<AnyRow | null>(null);
   const [memberships, setMemberships] = useState<AnyRow[]>([]);
   const [payments, setPayments] = useState<AnyRow[]>([]);
   const [expenses, setExpenses] = useState<AnyRow[]>([]);
@@ -955,8 +992,8 @@ export function GymPage() {
         </header>
 
         <section className="space-y-5 p-3 sm:p-4 lg:space-y-6 lg:p-8">
-          {tab === "dashboard" ? <Dashboard dashboard={dashboard} activeMembers={activeMembers.length} memberships={memberships.length} notifications={notifications} /> : null}
-          {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio"><DataTable title="Socios registrados" rows={members} columns={["member_code", "dni", "first_name", "last_name", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<><button onClick={() => void checkIn(row.id)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Ingreso</button><button onClick={() => void openMemberMemberships(row)} className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">Membresías</button></>} />} /></Module> : null}
+          {tab === "dashboard" ? <Dashboard dashboard={dashboard} activeMembers={activeMembers.length} membershipsCount={memberships.length} notifications={notifications} members={members} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={setCredentialMember} /> : null}
+          {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio"><DataTable title="Socios registrados" rows={members} columns={["member_code", "dni", "first_name", "last_name", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<><IconButton title="Credencial digital" onClick={() => setCredentialMember(row)} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><QrCode className="h-4 w-4" /></IconButton><button onClick={() => void checkIn(row.id)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Ingreso</button><button onClick={() => void openMemberMemberships(row)} className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">Membresías</button></>} />} /></Module> : null}
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
           {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} /></Module> : null}
@@ -976,6 +1013,7 @@ export function GymPage() {
       <ClassDetailModal open={classDetailOpen} gymClass={selectedClass} members={members} rows={classBookings} bookingDate={classBookingDate} selectedMemberId={classBookingMemberId} onDateChange={(date) => { setClassBookingDate(date); void reloadClassBookings(date); }} onMemberChange={setClassBookingMemberId} onReserve={reserveClass} onCheckIn={checkInClassBooking} onCancel={cancelClassBooking} onClose={() => setClassDetailOpen(false)} />
       <TrainingSubscriptionModal open={trainingSubscriptionModalOpen} editing={Boolean(editingTrainingSubscriptionId)} form={trainingSubscriptionForm} members={members} onCreateMember={openTrainingMemberModal} onChange={setTrainingSubscriptionForm} onClose={() => { setEditingTrainingSubscriptionId(null); setTrainingSubscriptionModalOpen(false); }} onSubmit={saveTrainingSubscription} />
       <TrainingSubscriptionDetailModal subscription={trainingSubscriptionDetail} onClose={() => setTrainingSubscriptionDetail(null)} onEdit={(subscription) => { setTrainingSubscriptionDetail(null); openEditTrainingSubscription(subscription); }} />
+      <MemberCredentialModal member={credentialMember} membership={credentialMember ? memberActiveMembership(credentialMember, memberships) : null} onClose={() => setCredentialMember(null)} onCheckIn={(memberId) => void checkIn(memberId)} />
       <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => { setMemberModalContext("general"); setMemberModalOpen(false); }} onSubmit={saveMember} />
       <ConfirmModal state={confirm} onClose={() => setConfirm(null)} />
       <ErrorModal state={errorModal} onClose={() => setErrorModal(null)} />
@@ -983,15 +1021,94 @@ export function GymPage() {
   );
 }
 
-function Dashboard({ dashboard, activeMembers, memberships, notifications }: { dashboard: AnyRow; activeMembers: number; memberships: number; notifications: AnyRow[] }) {
+function Dashboard({ dashboard, activeMembers, membershipsCount, notifications, members, memberships, payments, attendance, trainingSubscriptions, onOpenCredential }: { dashboard: AnyRow; activeMembers: number; membershipsCount: number; notifications: AnyRow[]; members: AnyRow[]; memberships: AnyRow[]; payments: AnyRow[]; attendance: AnyRow[]; trainingSubscriptions: AnyRow[]; onOpenCredential: (member: AnyRow) => void }) {
   return (
     <>
       <div className="grid grid-cols-2 gap-3 lg:gap-4 xl:grid-cols-4">{(dashboard.kpis ?? []).map((kpi: AnyRow) => <div key={kpi.label} className={cardClass()}><p className="text-xs font-bold text-zinc-500 sm:text-sm">{kpi.label}</p><p className="mt-2 text-2xl font-black sm:text-3xl">{kpi.value}</p><p className="mt-2 text-[11px] font-semibold text-zinc-400 sm:text-xs">{kpi.hint}</p></div>)}</div>
       <div className="grid gap-5 xl:grid-cols-3">
-        <div className={`${cardClass()} xl:col-span-2`}><h2 className="text-lg font-black">Operación de hoy</h2><div className="mt-4 grid gap-3 sm:grid-cols-3"><MetricCard title="Ingresos hoy" value={dashboard.attendance_today ?? 0} yellow /><MetricCard title="Socios activos" value={activeMembers} dark /><MetricCard title="Planes vendidos" value={memberships} /></div></div>
+        <div className={`${cardClass()} xl:col-span-2`}><h2 className="text-lg font-black">Operación de hoy</h2><div className="mt-4 grid gap-3 sm:grid-cols-3"><MetricCard title="Ingresos hoy" value={dashboard.attendance_today ?? 0} yellow /><MetricCard title="Socios activos" value={activeMembers} dark /><MetricCard title="Planes vendidos" value={membershipsCount} /></div></div>
         <div className={cardClass()}><h2 className="text-lg font-black">Notificaciones</h2><div className="mt-3 space-y-3">{notifications.slice(0, 5).map((item) => <div key={item.id} className="rounded-2xl bg-amber-50 p-3 text-sm"><b>{item.title}</b><p className="text-zinc-600">{item.body}</p></div>)}</div></div>
       </div>
+      <PremiumCommandCenter members={members} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={onOpenCredential} />
     </>
+  );
+}
+
+function PremiumCommandCenter({ members, memberships, payments, attendance, trainingSubscriptions, onOpenCredential }: { members: AnyRow[]; memberships: AnyRow[]; payments: AnyRow[]; attendance: AnyRow[]; trainingSubscriptions: AnyRow[]; onOpenCredential: (member: AnyRow) => void }) {
+  const expiring = memberships.filter((item) => item.status === "active" && (daysUntil(item.ends_on) ?? 999) >= 0 && (daysUntil(item.ends_on) ?? 999) <= 7);
+  const expired = memberships.filter((item) => item.status === "active" && (daysUntil(item.ends_on) ?? 1) < 0);
+  const inactiveMembers = members.filter((member) => {
+    const last = lastAttendanceForMember(member, attendance);
+    const inactivity = last ? Math.abs(daysUntil(last.checked_in_at) ?? 0) : 99;
+    return member.status === "active" && inactivity >= 7;
+  });
+  const birthdayMembers = members.filter((member) => {
+    const date = dateOnly(member.birthdate);
+    const today = new Date();
+    return date && date.getMonth() === today.getMonth();
+  });
+  const yapePlin = payments.filter((payment) => ["yape", "plin"].includes(payment.method)).reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0);
+  const subscriptionIncome = trainingSubscriptions.filter((item) => item.status === "active").reduce((sum, item) => sum + Number(item.monthly_fee ?? 0), 0);
+  const priorityMembers = [...expiring, ...expired].slice(0, 5).map((membership) => members.find((member) => Number(member.id) === Number(membership.member_id))).filter(Boolean) as AnyRow[];
+
+  return (
+    <div className="space-y-4">
+      <div className="overflow-hidden rounded-3xl bg-zinc-950 text-white shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-white/10 p-5 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.24em] text-[#ffcc00]">Suite premium</p>
+            <h2 className="text-2xl font-black">Retención, portal y crecimiento</h2>
+            <p className="mt-1 text-sm text-zinc-400">Acciones inteligentes para reducir fugas, vender más renovaciones y profesionalizar la atención.</p>
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs font-black">
+            <span className="rounded-full bg-white/10 px-3 py-2">Portal móvil</span>
+            <span className="rounded-full bg-white/10 px-3 py-2">WhatsApp</span>
+            <span className="rounded-full bg-white/10 px-3 py-2">QR</span>
+            <span className="rounded-full bg-white/10 px-3 py-2">Gamificación</span>
+          </div>
+        </div>
+        <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard title="Vencen en 7 días" value={expiring.length} yellow />
+          <MetricCard title="Vencidos por cobrar" value={expired.length} />
+          <MetricCard title="Inactivos 7+ días" value={inactiveMembers.length} />
+          <MetricCard title="Cumpleaños del mes" value={birthdayMembers.length} />
+        </div>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-3">
+        <div className={`${cardClass()} xl:col-span-2`}>
+          <div className="mb-4 flex items-center gap-2"><AlertTriangle className="h-5 w-5 text-amber-500" /><h3 className="text-lg font-black">Acciones recomendadas</h3></div>
+          <div className="space-y-3">
+            {priorityMembers.length === 0 ? <p className="rounded-2xl bg-emerald-50 p-4 text-sm font-bold text-emerald-700">No hay renovaciones críticas por ahora.</p> : null}
+            {priorityMembers.map((member) => {
+              const membership = memberActiveMembership(member, memberships);
+              const remaining = daysUntil(membership?.ends_on);
+              const text = remaining !== null && remaining < 0 ? `Hola ${member.first_name}, tu membresía venció. ¿Deseas renovarla hoy?` : `Hola ${member.first_name}, tu membresía vence pronto. ¿Te ayudo a renovarla?`;
+              const url = whatsappUrl(member.phone, text);
+              return (
+                <div key={member.id} className="flex flex-col gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div><p className="font-black">{memberFullName(member)}</p><p className="text-sm font-semibold text-zinc-500">{remaining !== null && remaining < 0 ? `Vencido hace ${Math.abs(remaining)} días` : `Vence en ${remaining ?? "-"} días`}</p></div>
+                  <div className="flex gap-2">
+                    <IconButton title="Credencial" onClick={() => onOpenCredential(member)} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><QrCode className="h-4 w-4" /></IconButton>
+                    {url ? <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white"><MessageCircle className="h-4 w-4" />WhatsApp</a> : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className={cardClass()}>
+          <div className="mb-4 flex items-center gap-2"><Trophy className="h-5 w-5 text-[#d9a900]" /><h3 className="text-lg font-black">Motor premium</h3></div>
+          <div className="space-y-3">
+            <MetricCard title="Yape + Plin" value={money(yapePlin)} yellow />
+            <MetricCard title="Mensualidades activas" value={money(subscriptionIncome)} />
+            <div className="rounded-2xl bg-zinc-950 p-4 text-white">
+              <p className="text-sm font-black">Retos y premios</p>
+              <p className="mt-1 text-xs text-zinc-400">Usa asistencia y renovaciones para crear rankings, premios y campañas de retención.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1491,6 +1608,44 @@ function TrainingSubscriptionDetailModal({ subscription, onClose, onEdit }: { su
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button type="button" onClick={onClose} className="rounded-2xl border border-zinc-200 px-5 py-3 text-sm font-black">Cerrar</button>
           <button type="button" onClick={() => onEdit(subscription)} className="rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-black text-white">Editar</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function MemberCredentialModal({ member, membership, onClose, onCheckIn }: { member: AnyRow | null; membership: AnyRow | null; onClose: () => void; onCheckIn: (memberId: number) => void }) {
+  if (!member) return null;
+  const status = membership && (daysUntil(membership.ends_on) ?? -1) >= 0 ? "active" : "expired";
+  const portalCode = `${member.member_code ?? member.id}-${member.dni ?? member.document_number ?? ""}`;
+  const whatsapp = whatsappUrl(member.phone, `Hola ${member.first_name}, esta es tu credencial digital del gimnasio. Código: ${portalCode}`);
+
+  return (
+    <Modal open title="Credencial digital del socio" subtitle="Tarjeta lista para validar acceso, compartir por WhatsApp y atender desde celular." onClose={onClose}>
+      <div className="space-y-4">
+        <div className="overflow-hidden rounded-3xl bg-zinc-950 text-white">
+          <div className="flex items-start justify-between gap-3 p-5">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.24em] text-[#ffcc00]">Portal del miembro</p>
+              <h3 className="mt-2 text-2xl font-black">{memberFullName(member)}</h3>
+              <p className="text-sm text-zinc-400">DNI {member.dni ?? member.document_number ?? "-"} · {member.member_code ?? "Sin código"}</p>
+            </div>
+            <div className="grid h-20 w-20 shrink-0 place-items-center rounded-2xl bg-white text-zinc-950">
+              <QrCode className="h-11 w-11" />
+            </div>
+          </div>
+          <div className="grid gap-3 border-t border-white/10 p-5 sm:grid-cols-3">
+            <MetricCard title="Estado" value={<StatusBadge value={status} />} yellow={status === "active"} />
+            <MetricCard title="Vence" value={membership?.ends_on ? formatDateTime(membership.ends_on) : "Sin plan"} />
+            <MetricCard title="Código QR" value={portalCode} />
+          </div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <button type="button" onClick={() => onCheckIn(Number(member.id))} className="rounded-2xl bg-[#ffcc00] px-5 py-3 text-sm font-black text-zinc-950">Registrar ingreso</button>
+          {whatsapp ? <a href={whatsapp} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white"><MessageCircle className="h-4 w-4" />Enviar por WhatsApp</a> : <button type="button" disabled className="rounded-2xl bg-zinc-100 px-5 py-3 text-sm font-black text-zinc-400">Sin teléfono</button>}
+        </div>
+        <div className="rounded-3xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-600">
+          Esta credencial prepara el flujo de portal móvil y check-in QR: el staff puede validar al socio sin buscarlo manualmente.
         </div>
       </div>
     </Modal>
