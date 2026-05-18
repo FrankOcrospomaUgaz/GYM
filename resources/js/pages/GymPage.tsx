@@ -12,6 +12,7 @@ type ClassViewMode = "mes" | "semana" | "tabla";
 
 const classDisciplines = ["MMA", "Sparring", "Box", "Brazilian Jiu-Jitsu", "Muay Thai", "Funcional", "Cardio", "Fuerza", "Yoga"];
 const expenseCategories = ["Alquiler", "Servicios", "Sueldos", "Limpieza", "Mantenimiento", "Equipos", "Marketing", "Internet", "Impuestos", "Software", "Insumos", "Seguridad", "Otros"];
+const incomeCategories = ["Venta externa", "Alquiler de ambiente", "Venta de productos", "Patrocinio", "Evento", "Clase particular", "Recuperación de deuda", "Otros"];
 const validationFieldLabels: Record<string, string> = {
   member_id: "Socio",
   discipline: "Disciplina",
@@ -66,6 +67,16 @@ const emptyPlan = {
   includes_trainer: false,
   description: "",
   is_active: true,
+};
+
+const emptyEquipment = {
+  name: "",
+  code: "",
+  branch_id: "",
+  purchased_on: "",
+  next_maintenance_on: "",
+  status: "operational",
+  notes: "",
 };
 
 const emptyClassForm = {
@@ -421,8 +432,8 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
     ...payments.map((payment) => ({
       id: `payment-${payment.id}`,
       movement_type: "income",
-      concept: payment.receipt_number ?? "Pago recibido",
-      member_name: payment.member_name,
+      concept: payment.notes?.startsWith("Ingreso externo") ? (payment.notes.replace("Ingreso externo: ", "") || payment.receipt_number) : (payment.receipt_number ?? "Pago recibido"),
+      member_name: payment.member_name ?? payment.payer_name ?? "-",
       amount: Number(payment.amount ?? 0),
       method: payment.method,
       movement_date: payment.paid_on,
@@ -501,7 +512,9 @@ export function GymPage() {
   const [saas, setSaas] = useState<AnyRow>({ tenants: [], users: [], modules: [], roles: [], branches: [] });
   const [memberForm, setMemberForm] = useState<AnyRow>(emptyMember);
   const [planForm, setPlanForm] = useState<AnyRow>(emptyPlan);
+  const [equipmentForm, setEquipmentForm] = useState<AnyRow>(emptyEquipment);
   const [saleForm, setSaleForm] = useState<AnyRow>({ member_id: "", plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", proof_photo: null, notes: "" });
+  const [incomeForm, setIncomeForm] = useState<AnyRow>({ category: "Venta externa", concept: "", payer_name: "", amount: "", paid_on: new Date().toISOString().slice(0, 10), method: "cash", proof_photo: null, notes: "" });
   const [expenseForm, setExpenseForm] = useState<AnyRow>({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", proof_photo: null });
   const [classForm, setClassForm] = useState<AnyRow>(emptyClassForm);
   const [classModalOpen, setClassModalOpen] = useState(false);
@@ -519,12 +532,15 @@ export function GymPage() {
   const [editingClassId, setEditingClassId] = useState<number | null>(null);
   const [editingMemberId, setEditingMemberId] = useState<number | null>(null);
   const [editingPlanId, setEditingPlanId] = useState<number | null>(null);
+  const [editingEquipmentId, setEditingEquipmentId] = useState<number | null>(null);
   const [memberModalContext, setMemberModalContext] = useState<MemberModalContext>("general");
   const [memberModalOpen, setMemberModalOpen] = useState(false);
   const [planModalOpen, setPlanModalOpen] = useState(false);
+  const [equipmentModalOpen, setEquipmentModalOpen] = useState(false);
   const [saleModalOpen, setSaleModalOpen] = useState(false);
   const [memberMembershipModalOpen, setMemberMembershipModalOpen] = useState(false);
   const [selectedMember, setSelectedMember] = useState<AnyRow | null>(null);
+  const [incomeModalOpen, setIncomeModalOpen] = useState(false);
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [errorModal, setErrorModal] = useState<ErrorState>(null);
@@ -739,6 +755,53 @@ export function GymPage() {
     });
   }
 
+  function openNewEquipment() {
+    setEditingEquipmentId(null);
+    setEquipmentForm({ ...emptyEquipment, branch_id: branches[0]?.id ? String(branches[0].id) : "" });
+    setEquipmentModalOpen(true);
+  }
+
+  function openEditEquipment(item: AnyRow) {
+    setEditingEquipmentId(item.id);
+    setEquipmentForm({
+      name: item.name ?? "",
+      code: item.code ?? "",
+      branch_id: item.branch_id ? String(item.branch_id) : "",
+      purchased_on: item.purchased_on ?? "",
+      next_maintenance_on: item.next_maintenance_on ?? "",
+      status: item.status ?? "operational",
+      notes: item.notes ?? "",
+    });
+    setEquipmentModalOpen(true);
+  }
+
+  async function saveEquipment(event: FormEvent) {
+    event.preventDefault();
+    const payload = { ...equipmentForm, branch_id: equipmentForm.branch_id || null };
+    if (editingEquipmentId) {
+      await httpClient.put(`/api/gym/equipment/${editingEquipmentId}`, payload);
+      setMessage("Equipo actualizado correctamente.");
+    } else {
+      await httpClient.post("/api/gym/equipment", payload);
+      setMessage("Equipo registrado correctamente.");
+    }
+    setEquipmentModalOpen(false);
+    setEditingEquipmentId(null);
+    await loadAll();
+  }
+
+  function confirmDeleteEquipment(item: AnyRow) {
+    setConfirm({
+      title: "Eliminar equipo",
+      body: `¿Deseas eliminar "${item.name}" del inventario?`,
+      onConfirm: async () => {
+        const response = await httpClient.delete(`/api/gym/equipment/${item.id}`);
+        setMessage(response.data?.message ?? "Equipo eliminado correctamente.");
+        await loadAll();
+      },
+    });
+  }
+
   async function sellMembership(event: FormEvent) {
     event.preventDefault();
     setMessage("");
@@ -769,6 +832,17 @@ export function GymPage() {
     setExpenseForm({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", proof_photo: null });
     setExpenseModalOpen(false);
     setMessage("Gasto registrado.");
+    await loadAll();
+  }
+
+  async function saveExternalIncome(event: FormEvent) {
+    event.preventDefault();
+    const formData = new FormData();
+    for (const [key, value] of Object.entries(incomeForm)) await appendFormValue(formData, key, value);
+    await httpClient.post("/api/gym/payments", formData);
+    setIncomeForm({ category: "Venta externa", concept: "", payer_name: "", amount: "", paid_on: new Date().toISOString().slice(0, 10), method: "cash", proof_photo: null, notes: "" });
+    setIncomeModalOpen(false);
+    setMessage("Ingreso externo registrado.");
     await loadAll();
   }
 
@@ -998,8 +1072,8 @@ export function GymPage() {
           {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} /></Module> : null}
           {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} /> : null}
-          {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos."><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} /></Module> : null}
-          {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} onNewExpense={() => setExpenseModalOpen(true)} /> : null}
+          {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos." onNew={openNewEquipment} newLabel="Nuevo equipo"><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} action={(row) => <ActionButtons onEdit={() => openEditEquipment(row)} onDelete={() => confirmDeleteEquipment(row)} />} /></Module> : null}
+          {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} onNewIncome={() => setIncomeModalOpen(true)} onNewExpense={() => setExpenseModalOpen(true)} /> : null}
           {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} /> : null}
         </section>
       </main>
@@ -1008,7 +1082,9 @@ export function GymPage() {
       <PlanModal open={planModalOpen} editing={Boolean(editingPlanId)} form={planForm} onChange={setPlanForm} onClose={() => setPlanModalOpen(false)} onSubmit={savePlan} />
       <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} onChange={setSaleForm} onClose={() => setSaleModalOpen(false)} onSubmit={sellMembership} />
       <MemberMembershipModal open={memberMembershipModalOpen} member={selectedMember} rows={memberMemberships} saleForm={saleForm} plans={plans} onSaleChange={setSaleForm} onClose={() => setMemberMembershipModalOpen(false)} onSubmit={sellMembership} />
+      <IncomeModal open={incomeModalOpen} form={incomeForm} onChange={setIncomeForm} onClose={() => setIncomeModalOpen(false)} onSubmit={saveExternalIncome} />
       <ExpenseModal open={expenseModalOpen} form={expenseForm} onChange={setExpenseForm} onClose={() => setExpenseModalOpen(false)} onSubmit={saveExpense} />
+      <EquipmentModal open={equipmentModalOpen} editing={Boolean(editingEquipmentId)} form={equipmentForm} branches={branches} onChange={setEquipmentForm} onClose={() => { setEquipmentModalOpen(false); setEditingEquipmentId(null); }} onSubmit={saveEquipment} />
       <ClassModal open={classModalOpen} editing={Boolean(editingClassId)} form={classForm} branches={branches} onChange={setClassForm} onClose={() => setClassModalOpen(false)} onSubmit={saveClass} />
       <ClassDetailModal open={classDetailOpen} gymClass={selectedClass} members={members} rows={classBookings} bookingDate={classBookingDate} selectedMemberId={classBookingMemberId} onDateChange={(date) => { setClassBookingDate(date); void reloadClassBookings(date); }} onMemberChange={setClassBookingMemberId} onReserve={reserveClass} onCheckIn={checkInClassBooking} onCancel={cancelClassBooking} onClose={() => setClassDetailOpen(false)} />
       <TrainingSubscriptionModal open={trainingSubscriptionModalOpen} editing={Boolean(editingTrainingSubscriptionId)} form={trainingSubscriptionForm} members={members} onCreateMember={openTrainingMemberModal} onChange={setTrainingSubscriptionForm} onClose={() => { setEditingTrainingSubscriptionId(null); setTrainingSubscriptionModalOpen(false); }} onSubmit={saveTrainingSubscription} />
@@ -1128,7 +1204,7 @@ function Module({ title, subtitle, children, onNew, newLabel }: { title: string;
   );
 }
 
-function FinanceModule({ movements, payments, expenses, onNewExpense }: { movements: AnyRow[]; payments: AnyRow[]; expenses: AnyRow[]; onNewExpense: () => void }) {
+function FinanceModule({ movements, payments, expenses, onNewIncome, onNewExpense }: { movements: AnyRow[]; payments: AnyRow[]; expenses: AnyRow[]; onNewIncome: () => void; onNewExpense: () => void }) {
   const methods = ["cash", "yape", "plin", "transfer", "card"];
   const incomeByMethod = methods.map((method) => ({
     method,
@@ -1138,7 +1214,14 @@ function FinanceModule({ movements, payments, expenses, onNewExpense }: { moveme
   const totalExpenses = expenses.reduce((sum, expense) => sum + Number(expense.amount ?? 0), 0);
 
   return (
-    <Module title="Caja" subtitle="Movimientos completos de ingresos y gastos operativos." onNew={onNewExpense} newLabel="Registrar gasto">
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 rounded-3xl bg-zinc-950 p-4 text-white shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-5">
+        <div><p className="text-xs font-black uppercase tracking-[0.24em] text-[#ffcc00]">Administración</p><h2 className="text-2xl font-black">Caja</h2><p className="mt-1 text-sm text-zinc-400">Movimientos completos de ingresos, gastos, efectivo, cuentas, Yape y Plin.</p></div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button onClick={onNewIncome} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#ffcc00] px-4 py-3 text-sm font-black text-zinc-950 shadow-lg shadow-yellow-500/20"><Plus className="h-4 w-4" />Registrar ingreso</button>
+          <button onClick={onNewExpense} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-black text-zinc-950"><Plus className="h-4 w-4" />Registrar gasto</button>
+        </div>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard title="Total recaudado" value={money(totalIncome)} yellow />
         <MetricCard title="Gastos registrados" value={money(totalExpenses)} />
@@ -1149,7 +1232,7 @@ function FinanceModule({ movements, payments, expenses, onNewExpense }: { moveme
         {incomeByMethod.map((item) => <MetricCard key={item.method} title={cellTranslations.method[item.method]} value={money(item.amount)} />)}
       </div>
       <DataTable title="Movimientos de caja" rows={movements} columns={["movement_type", "concept", "member_name", "amount", "method", "movement_date", "proof_url", "status"]} />
-    </Module>
+    </div>
   );
 }
 
@@ -1392,6 +1475,30 @@ function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChan
   );
 }
 
+function IncomeModal({ open, form, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return (
+    <Modal open={open} title="Registrar ingreso externo" subtitle="Suma dinero a caja aunque no provenga de membresías o mensualidades." onClose={onClose}>
+      <form onSubmit={onSubmit} className="grid gap-3">
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          <RequiredLabel>Categoría</RequiredLabel>
+          <select required value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value })} className={fieldClass("w-full")}>
+            {incomeCategories.map((category) => <option key={category} value={category}>{category}</option>)}
+          </select>
+        </label>
+        <Field label="Concepto" value={form.concept} onChange={(value) => onChange({ ...form, concept: value })} required />
+        <Field label="Recibido de" value={form.payer_name} onChange={(value) => onChange({ ...form, payer_name: value })} />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Monto" type="number" value={form.amount} onChange={(value) => onChange({ ...form, amount: value })} required />
+          <Field label="Fecha" type="date" value={form.paid_on} onChange={(value) => onChange({ ...form, paid_on: value })} required />
+        </div>
+        <PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
+        <FormActions onClose={onClose} submitLabel="Guardar ingreso" />
+      </form>
+    </Modal>
+  );
+}
+
 function ExpenseModal({ open, form, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
   return (
     <Modal open={open} title="Registrar gasto" subtitle="Controla egresos operativos del gimnasio." onClose={onClose}>
@@ -1410,6 +1517,40 @@ function ExpenseModal({ open, form, onChange, onClose, onSubmit }: { open: boole
         </div>
         <PaymentFields method={form.payment_method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, payment_method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <FormActions onClose={onClose} submitLabel="Guardar gasto" />
+      </form>
+    </Modal>
+  );
+}
+
+function EquipmentModal({ open, editing, form, branches, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return (
+    <Modal open={open} title={editing ? "Editar equipo" : "Nuevo equipo"} subtitle="Controla inventario, estado operativo y próximas fechas de mantenimiento." onClose={onClose}>
+      <form onSubmit={onSubmit} className="grid gap-3">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Nombre" value={form.name} onChange={(value) => onChange({ ...form, name: value })} required />
+          <Field label="Código" value={form.code} onChange={(value) => onChange({ ...form, code: value })} required />
+        </div>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          Sede
+          <select value={form.branch_id ?? ""} onChange={(event) => onChange({ ...form, branch_id: event.target.value })} className={fieldClass("w-full")}>
+            <option value="">Sin sede específica</option>
+            {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+          </select>
+        </label>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Fecha de compra" type="date" value={form.purchased_on} onChange={(value) => onChange({ ...form, purchased_on: value })} />
+          <Field label="Próximo mantenimiento" type="date" value={form.next_maintenance_on} onChange={(value) => onChange({ ...form, next_maintenance_on: value })} />
+        </div>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          <RequiredLabel>Estado</RequiredLabel>
+          <select required value={form.status ?? "operational"} onChange={(event) => onChange({ ...form, status: event.target.value })} className={fieldClass("w-full")}>
+            <option value="operational">Operativo</option>
+            <option value="maintenance">En mantenimiento</option>
+            <option value="damaged">Averiado</option>
+          </select>
+        </label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
+        <FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Registrar equipo"} />
       </form>
     </Modal>
   );

@@ -28,7 +28,7 @@ class GymController extends Controller
 
     private function isSystemAdmin(?User $user): bool
     {
-        return (bool) ($user?->is_superadmin);
+        return (bool) (optional($user)->is_superadmin);
     }
 
     private function tenantId(Request $request): ?int
@@ -38,7 +38,7 @@ class GymController extends Controller
             return (int) $request->query('tenant_id');
         }
 
-        return $user?->tenant_id ? (int) $user->tenant_id : null;
+        return optional($user)->tenant_id ? (int) $user->tenant_id : null;
     }
 
     private function defaultTenantId(Request $request): ?int
@@ -556,8 +556,40 @@ class GymController extends Controller
 
     public function payments(Request $request): JsonResponse
     {
+        if ($request->isMethod('post')) {
+            $data = $request->validate([
+                'category' => ['required', 'string', 'max:80'],
+                'concept' => ['required', 'string', 'max:160'],
+                'payer_name' => ['nullable', 'string', 'max:160'],
+                'amount' => ['required', 'numeric', 'min:0.01'],
+                'paid_on' => ['required', 'date'],
+                'method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+                'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
+                'notes' => ['nullable', 'string'],
+            ]);
+
+            $proofPath = $data['method'] !== 'cash' && $request->hasFile('proof_photo')
+                ? $request->file('proof_photo')?->store('payment-proofs', 'public')
+                : null;
+
+            DB::table('gym_payments')->insert([
+                'tenant_id' => $this->defaultTenantId($request),
+                'member_id' => null,
+                'receipt_number' => $this->nextPaymentReceiptNumber(),
+                'amount' => $data['amount'],
+                'method' => $data['method'],
+                'proof_path' => $proofPath,
+                'status' => 'paid',
+                'paid_on' => Carbon::parse($data['paid_on'])->toDateString(),
+                'notes' => 'Ingreso externo: '.$data['concept'].($data['payer_name'] ? ' · '.$data['payer_name'] : '').' · '.$data['category'].($data['notes'] ? ' · '.$data['notes'] : ''),
+                'registered_by' => $request->user()?->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
         return response()->json($this->scopeTenant(DB::table('gym_payments'), $request, 'gym_payments')
-            ->join('gym_members', 'gym_members.id', '=', 'gym_payments.member_id')
+            ->leftJoin('gym_members', 'gym_members.id', '=', 'gym_payments.member_id')
             ->select('gym_payments.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"))
             ->orderByDesc('gym_payments.id')
             ->limit(100)
@@ -969,6 +1001,52 @@ class GymController extends Controller
         $this->scopeBranches($query, $request, 'gym_equipment');
 
         return response()->json($query->get());
+    }
+
+    public function storeEquipment(Request $request): JsonResponse
+    {
+        $data = $this->validateEquipment($request);
+        $data['tenant_id'] = $this->defaultTenantId($request);
+        $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
+        $data['created_at'] = now();
+        $data['updated_at'] = now();
+
+        $id = DB::table('gym_equipment')->insertGetId($data);
+
+        return response()->json(DB::table('gym_equipment')->find($id), 201);
+    }
+
+    public function updateEquipment(Request $request, int $equipment): JsonResponse
+    {
+        $data = $this->validateEquipment($request, $equipment);
+        $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
+        $data['updated_at'] = now();
+
+        $updated = $this->scopeTenant(DB::table('gym_equipment')->where('id', $equipment), $request, 'gym_equipment')->update($data);
+        abort_unless($updated > 0, 404, 'Equipo no encontrado.');
+
+        return response()->json(DB::table('gym_equipment')->find($equipment));
+    }
+
+    public function destroyEquipment(Request $request, int $equipment): JsonResponse
+    {
+        $deleted = $this->scopeTenant(DB::table('gym_equipment')->where('id', $equipment), $request, 'gym_equipment')->delete();
+        abort_unless($deleted > 0, 404, 'Equipo no encontrado.');
+
+        return response()->json(['ok' => true, 'message' => 'Equipo eliminado correctamente.']);
+    }
+
+    private function validateEquipment(Request $request, ?int $equipmentId = null): array
+    {
+        return $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'code' => ['required', 'string', 'max:40', Rule::unique('gym_equipment', 'code')->ignore($equipmentId)],
+            'branch_id' => ['nullable', 'exists:gym_branches,id'],
+            'purchased_on' => ['nullable', 'date'],
+            'next_maintenance_on' => ['nullable', 'date'],
+            'status' => ['required', Rule::in(['operational', 'maintenance', 'damaged'])],
+            'notes' => ['nullable', 'string', 'max:500'],
+        ]);
     }
 
     /**

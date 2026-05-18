@@ -31,7 +31,7 @@ Route::middleware('auth')->group(function (): void {
         Route::get('members/{member}/memberships', [GymController::class, 'memberMemberships']);
         Route::get('memberships', [GymController::class, 'memberships']);
         Route::post('memberships', [GymController::class, 'sellMembership']);
-        Route::get('payments', [GymController::class, 'payments']);
+        Route::match(['get', 'post'], 'payments', [GymController::class, 'payments']);
         Route::get('attendance', [GymController::class, 'attendance']);
         Route::post('attendance/check-in', [GymController::class, 'checkIn']);
         Route::get('classes', [GymController::class, 'classes']);
@@ -47,6 +47,9 @@ Route::middleware('auth')->group(function (): void {
         Route::post('class-bookings/{booking}/check-in', [GymController::class, 'checkInClassBooking']);
         Route::post('class-bookings/{booking}/cancel', [GymController::class, 'cancelClassBooking']);
         Route::get('equipment', [GymController::class, 'equipment']);
+        Route::post('equipment', [GymController::class, 'storeEquipment']);
+        Route::put('equipment/{equipment}', [GymController::class, 'updateEquipment']);
+        Route::delete('equipment/{equipment}', [GymController::class, 'destroyEquipment']);
         Route::match(['get', 'post'], 'expenses', [GymController::class, 'expenses']);
         Route::get('notifications', [GymController::class, 'notifications']);
         Route::get('saas', [GymController::class, 'saas']);
