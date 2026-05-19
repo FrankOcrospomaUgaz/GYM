@@ -673,7 +673,7 @@ export function GymPage() {
   }
 
   async function loadAll() {
-    const [dash, branchRes, goalRes, planRes, memberRes, membershipRes, paymentRes, expenseRes, attendanceRes, classRes, trainingRes, equipmentRes, productRes, productSalesRes, notificationRes] = await Promise.all([
+    const results = await Promise.allSettled([
       httpClient.get("/api/gym/dashboard"),
       httpClient.get("/api/gym/branches"),
       httpClient.get("/api/gym/fitness-goals"),
@@ -690,36 +690,49 @@ export function GymPage() {
       httpClient.get("/api/gym/product-sales", { params: { branch_id: productBranchFilter || undefined } }),
       httpClient.get("/api/gym/notifications"),
     ]);
-    setDashboard(dash.data);
-    setBranches(branchRes.data);
-    setFitnessGoals(goalRes.data);
-    setPlans(planRes.data);
-    setMembers(memberRes.data.rows ?? memberRes.data);
-    setMemberTotal(memberRes.data.total ?? (memberRes.data?.length ?? 0));
-    setMemberships(membershipRes.data);
-    setPayments(paymentRes.data);
-    setExpenses(expenseRes.data);
-    setAttendance(attendanceRes.data);
-    setClasses(classRes.data);
-    setTrainingSubscriptions(trainingRes.data);
-    setEquipment(equipmentRes.data);
-    setProducts(productRes.data);
-    setProductSales(productSalesRes.data);
-    setNotifications(notificationRes.data);
+
+    const data = <T,>(index: number, fallback: T): T => {
+      const result = results[index];
+      return result.status === "fulfilled" ? result.value.data : fallback;
+    };
+
+    setDashboard(data(0, {}));
+    setBranches(data(1, []));
+    setFitnessGoals(data(2, []));
+    setPlans(data(3, []));
+    const memberPayload = data(4, { rows: [], total: 0 }) as AnyRow;
+    const memberRows = Array.isArray(memberPayload) ? memberPayload : (memberPayload.rows ?? []);
+    setMembers(memberRows);
+    setMemberTotal(memberPayload.total ?? memberRows.length);
+    setMemberships(data(5, []));
+    setPayments(data(6, []));
+    setExpenses(data(7, []));
+    setAttendance(data(8, []));
+    setClasses(data(9, []));
+    setTrainingSubscriptions(data(10, []));
+    setEquipment(data(11, []));
+    setProducts(data(12, []));
+    setProductSales(data(13, []));
+    setNotifications(data(14, []));
+
+    const failed = results.filter((result) => result.status === "rejected");
+    if (failed.length) {
+      console.error("Algunos módulos no cargaron:", failed);
+    }
+
     if (user?.is_superadmin) {
-      const saasRes = await httpClient.get("/api/gym/saas");
-      setSaas(saasRes.data);
+      try {
+        const saasRes = await httpClient.get("/api/gym/saas");
+        setSaas(saasRes.data);
+      } catch {
+        /* SaaS opcional */
+      }
     }
   }
 
   useEffect(() => {
     void loadAll();
   }, [membersPage, membersPerPage, memberStatusFilter, memberBranchFilter, memberSearch, financeBranchFilter, productBranchFilter]);
-
-  useEffect(() => {
-    if (!financeBranchFilter && user?.branch_id) setFinanceBranchFilter(String(user.branch_id));
-    if (!productBranchFilter && user?.branch_id) setProductBranchFilter(String(user.branch_id));
-  }, [user?.branch_id]);
 
   useEffect(() => {
     if (!notifications.length || typeof Notification === "undefined" || Notification.permission !== "granted") return;

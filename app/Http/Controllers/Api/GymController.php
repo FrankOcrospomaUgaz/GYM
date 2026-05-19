@@ -10,6 +10,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
@@ -70,25 +71,42 @@ class GymController extends Controller
         return array_values(array_unique($branchIds));
     }
 
+    private function isTenantAdmin(?User $user): bool
+    {
+        if ($this->isSystemAdmin($user)) {
+            return true;
+        }
+
+        if ($user === null) {
+            return false;
+        }
+
+        $user->loadMissing('role');
+
+        return $user->role?->slug === 'admin';
+    }
+
     private function scopeBranches($query, Request $request, string $table, ?string $branchColumn = null): void
     {
         $user = $request->user();
-        if ($this->isSystemAdmin($user)) {
+        if ($this->isTenantAdmin($user)) {
             return;
         }
 
         $branchIds = $this->userBranchIds($request);
-        if ($user?->role?->slug === 'admin') {
-            return;
-        }
-
         if ($branchIds === []) {
             $query->whereRaw('1 = 0');
+
             return;
         }
 
         $column = $branchColumn ?? $table.'.branch_id';
         $query->whereIn($column, $branchIds);
+    }
+
+    private function tableHasColumn(string $table, string $column): bool
+    {
+        return Schema::hasTable($table) && Schema::hasColumn($table, $column);
     }
 
     private function branchIdForWrite(Request $request, mixed $branchId): ?int
@@ -147,8 +165,12 @@ class GymController extends Controller
         $attendanceQuery = $this->scopeTenant(DB::table('gym_attendances'), $request, 'gym_attendances');
         $notificationsQuery = $this->scopeTenant(DB::table('gym_notifications'), $request, 'gym_notifications');
 
-        $this->scopeBranches($payments, $request, 'gym_payments');
-        $this->scopeBranches($expensesQuery, $request, 'gym_expenses');
+        if ($this->tableHasColumn('gym_payments', 'branch_id')) {
+            $this->scopeBranches($payments, $request, 'gym_payments');
+        }
+        if ($this->tableHasColumn('gym_expenses', 'branch_id')) {
+            $this->scopeBranches($expensesQuery, $request, 'gym_expenses');
+        }
         $this->scopeBranches($membershipsQuery, $request, 'gym_memberships', 'gym_members.branch_id');
         $this->scopeBranches($membersQuery, $request, 'gym_members');
         $this->scopeBranches($attendanceQuery, $request, 'gym_attendances');
@@ -158,20 +180,24 @@ class GymController extends Controller
             ->whereBetween('paid_on', [$monthStart->toDateString(), $monthEnd->toDateString()])
             ->sum('amount');
 
-        $accountsReceivable = (float) (clone $payments)
-            ->whereIn('status', ['pending', 'credit', 'partial'])
-            ->selectRaw('COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) as total')
-            ->value('total');
+        $receivableQuery = (clone $payments)->whereIn('status', ['pending', 'credit', 'partial']);
+        $accountsReceivable = $this->tableHasColumn('gym_payments', 'amount_paid')
+            ? (float) $receivableQuery->selectRaw('COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) as total')->value('total')
+            : (float) $receivableQuery->sum('amount');
 
         $expenses = (float) $expensesQuery
             ->whereBetween('spent_on', [$monthStart->toDateString(), $monthEnd->toDateString()])
             ->sum('amount');
 
-        $lowStockProducts = $this->scopeTenant(DB::table('gym_products'), $request, 'gym_products')
-            ->where('is_active', true)
-            ->whereNotNull('min_stock')
-            ->whereColumn('stock', '<=', 'min_stock');
-        $this->scopeBranches($lowStockProducts, $request, 'gym_products');
+        $lowStockCount = 0;
+        if (Schema::hasTable('gym_products')) {
+            $lowStockProducts = $this->scopeTenant(DB::table('gym_products'), $request, 'gym_products')
+                ->where('is_active', true)
+                ->whereNotNull('min_stock')
+                ->whereColumn('stock', '<=', 'min_stock');
+            $this->scopeBranches($lowStockProducts, $request, 'gym_products');
+            $lowStockCount = $lowStockProducts->count();
+        }
 
         $expiring = $membershipsQuery
             ->where('status', 'active')
@@ -185,7 +211,7 @@ class GymController extends Controller
                 ['label' => 'Utilidad estimada', 'value' => 'S/ '.number_format($income - $expenses, 2), 'hint' => 'Ingresos menos gastos'],
                 ['label' => 'Por vencer', 'value' => $expiring, 'hint' => 'Membresías próximos 7 días'],
                 ['label' => 'Por cobrar', 'value' => 'S/ '.number_format($accountsReceivable, 2), 'hint' => 'Créditos y pendientes'],
-                ['label' => 'Stock bajo', 'value' => $lowStockProducts->count(), 'hint' => 'Productos en mínimo'],
+                ['label' => 'Stock bajo', 'value' => $lowStockCount, 'hint' => 'Productos en mínimo'],
             ],
             'accounts_receivable' => $accountsReceivable,
             'attendance_today' => $attendanceQuery->whereDate('checked_in_at', $today->toDateString())->count(),
@@ -688,15 +714,26 @@ class GymController extends Controller
 
         $query = $this->scopeTenant(DB::table('gym_payments'), $request, 'gym_payments')
             ->leftJoin('gym_members', 'gym_members.id', '=', 'gym_payments.member_id')
-            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_payments.branch_id')
-            ->select('gym_payments.*', DB::raw("COALESCE(gym_payments.customer_name, CONCAT(gym_members.first_name, ' ', gym_members.last_name)) as payer_display"), DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_branches.name as branch_name')
             ->orderByDesc('gym_payments.id');
 
-        $this->scopeBranches($query, $request, 'gym_payments');
-
-        if ($request->filled('branch_id')) {
-            $query->where('gym_payments.branch_id', (int) $request->query('branch_id'));
+        if ($this->tableHasColumn('gym_payments', 'branch_id')) {
+            $query->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_payments.branch_id');
+            $this->scopeBranches($query, $request, 'gym_payments');
+            if ($request->filled('branch_id')) {
+                $query->where('gym_payments.branch_id', (int) $request->query('branch_id'));
+            }
         }
+
+        $select = ['gym_payments.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name")];
+        if ($this->tableHasColumn('gym_payments', 'customer_name')) {
+            $select[] = DB::raw("COALESCE(gym_payments.customer_name, CONCAT(gym_members.first_name, ' ', gym_members.last_name)) as payer_display");
+        } else {
+            $select[] = DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as payer_display");
+        }
+        if ($this->tableHasColumn('gym_payments', 'branch_id')) {
+            $select[] = 'gym_branches.name as branch_name';
+        }
+        $query->select($select);
 
         if ($request->boolean('receivable_only')) {
             $query->whereIn('gym_payments.status', ['pending', 'credit', 'partial']);
@@ -775,6 +812,10 @@ class GymController extends Controller
 
     public function products(Request $request): JsonResponse
     {
+        if (! Schema::hasTable('gym_products')) {
+            return response()->json([]);
+        }
+
         $query = $this->scopeTenant(DB::table('gym_products'), $request, 'gym_products')
             ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_products.branch_id')
             ->select('gym_products.*', 'gym_branches.name as branch_name')
@@ -924,6 +965,10 @@ class GymController extends Controller
 
     public function productSales(Request $request): JsonResponse
     {
+        if (! Schema::hasTable('gym_product_sales')) {
+            return response()->json([]);
+        }
+
         $query = $this->scopeTenant(DB::table('gym_product_sales'), $request, 'gym_product_sales')
             ->leftJoin('gym_products', 'gym_products.id', '=', 'gym_product_sales.product_id')
             ->leftJoin('gym_members', 'gym_members.id', '=', 'gym_product_sales.member_id')
@@ -1626,7 +1671,9 @@ class GymController extends Controller
                 'description' => ['required', 'string', 'max:255'],
             ]);
             $data['tenant_id'] = $this->defaultTenantId($request);
-            $data['branch_id'] = $this->branchIdForWrite($request, null);
+            if ($this->tableHasColumn('gym_expenses', 'branch_id')) {
+                $data['branch_id'] = $this->branchIdForWrite($request, null);
+            }
             $data['proof_path'] = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
                 ? $request->file('proof_photo')?->store('expense-proofs', 'public')
                 : null;
@@ -1636,15 +1683,17 @@ class GymController extends Controller
             DB::table('gym_expenses')->insert($data);
         }
 
-        $query = $this->scopeTenant(DB::table('gym_expenses'), $request, 'gym_expenses')
-            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_expenses.branch_id')
-            ->select('gym_expenses.*', 'gym_branches.name as branch_name')
-            ->orderByDesc('spent_on');
+        $query = $this->scopeTenant(DB::table('gym_expenses'), $request, 'gym_expenses')->orderByDesc('spent_on');
 
-        $this->scopeBranches($query, $request, 'gym_expenses');
-
-        if ($request->filled('branch_id')) {
-            $query->where('gym_expenses.branch_id', (int) $request->query('branch_id'));
+        if ($this->tableHasColumn('gym_expenses', 'branch_id')) {
+            $query->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_expenses.branch_id')
+                ->select('gym_expenses.*', 'gym_branches.name as branch_name');
+            $this->scopeBranches($query, $request, 'gym_expenses');
+            if ($request->filled('branch_id')) {
+                $query->where('gym_expenses.branch_id', (int) $request->query('branch_id'));
+            }
+        } else {
+            $query->select('gym_expenses.*');
         }
 
         return response()->json($query->limit(80)->get()->map(function ($expense) {
@@ -1870,7 +1919,9 @@ class GymController extends Controller
     private function enrichPayment(object $payment): object
     {
         $amount = (float) $payment->amount;
-        $amountPaid = (float) ($payment->amount_paid ?? 0);
+        $amountPaid = $this->tableHasColumn('gym_payments', 'amount_paid')
+            ? (float) ($payment->amount_paid ?? 0)
+            : (in_array($payment->status ?? '', ['paid', 'courtesy'], true) ? $amount : 0);
         $payment->amount_paid = $amountPaid;
         $payment->balance_due = round(max(0, $amount - $amountPaid), 2);
         $payment->proof_url = $payment->proof_path ? Storage::disk('public')->url($payment->proof_path) : null;
