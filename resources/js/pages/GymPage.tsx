@@ -2,6 +2,29 @@
 import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit3, Eye, IdCard, LayoutDashboard, LogOut, Menu, MessageCircle, PackageCheck, Plus, QrCode, Search, ShieldCheck, Trash2, Trophy, Users, X } from "lucide-react";
 import { httpClient } from "../http/client";
 import { parseApiError, registerHttpErrorHandlers } from "../http/api-errors";
+import { SearchableSelect } from "../components/SearchableSelect";
+import {
+  branchOptions,
+  categoryOptions,
+  equipmentStatusOptions,
+  fitnessGoalOptions,
+  memberOptions,
+  memberRecordStatusOptions,
+  memberStatusFilterOptions,
+  pageSizeOptions,
+  pageSizeOptionsLarge,
+  paymentMethodOptions,
+  paymentStatusOptions,
+  planOptions,
+  productOptions,
+  productPaymentStatusOptions,
+  stringOptions,
+  tenantBillingStatusOptions,
+  tenantOptions,
+  trainingStatusFilterOptions,
+  classLevelOptions,
+  weekdayOptions,
+} from "../components/gymSelectOptions";
 import { useAuth } from "../context/AuthContext";
 
 type AnyRow = Record<string, any>;
@@ -1402,9 +1425,9 @@ export function GymPage() {
           {tab === "dashboard" ? <Dashboard dashboard={dashboard} activeMembers={activeMembers.length} membershipsCount={memberships.length} notifications={notifications} members={members} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={setCredentialMember} /> : null}
           {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio">
             <div className="mb-4 grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-[repeat(3,minmax(0,1fr))]">
-              <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Estado</span><select value={memberStatusFilter} onChange={(event) => { setMembersPage(1); setMemberStatusFilter(event.target.value); }} className={fieldClass()}><option value="">Todos</option><option value="active">Activo</option><option value="inactive">Inactivo</option><option value="blocked">Bloqueado</option></select></label>
-              <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Sede</span><select value={memberBranchFilter} onChange={(event) => { setMembersPage(1); setMemberBranchFilter(event.target.value); }} className={fieldClass()}><option value="">Todas</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
-              <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Registros por página</span><select value={membersPerPage} onChange={(event) => { setMembersPage(1); setMembersPerPage(Number(event.target.value)); }} className={fieldClass()}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option></select></label>
+              <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Estado</span><SearchableSelect value={memberStatusFilter} onChange={(value) => { setMembersPage(1); setMemberStatusFilter(value); }} options={memberStatusFilterOptions.slice(1)} emptyOption={memberStatusFilterOptions[0]} className={fieldClass()} /></label>
+              <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Sede</span><SearchableSelect value={memberBranchFilter} onChange={(value) => { setMembersPage(1); setMemberBranchFilter(value); }} options={branchOptions(branches)} emptyOption={{ value: "", label: "Todas" }} className={fieldClass()} /></label>
+              <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Registros por página</span><SearchableSelect value={String(membersPerPage)} onChange={(value) => { setMembersPage(1); setMembersPerPage(Number(value)); }} options={pageSizeOptions} className={fieldClass()} /></label>
             </div>
             <DataTable title="Socios registrados" rows={members} columns={["member_code", "dni", "first_name", "last_name", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<><IconButton title="Credencial digital" onClick={() => setCredentialMember(row)} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><QrCode className="h-4 w-4" /></IconButton><button onClick={() => void checkIn(row.id)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Ingreso</button><button onClick={() => void openMemberMemberships(row)} className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">Membresías</button></>} />} />
             <div className="mt-4 flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
@@ -1610,7 +1633,7 @@ function ProductsModule({ products, productSales, branches, branchFilter, onBran
         </div>
       </div>
       <div className="grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-[minmax(0,1fr)_auto]">
-        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Filtrar por sede</span><select value={branchFilter} onChange={(event) => onBranchFilterChange(event.target.value)} className={fieldClass()}><option value="">Todas mis sedes</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Filtrar por sede</span><SearchableSelect value={branchFilter} onChange={onBranchFilterChange} options={branchOptions(branches)} emptyOption={{ value: "", label: "Todas mis sedes" }} className={fieldClass()} /></label>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard title="Productos activos" value={products.filter((item) => item.is_active).length} yellow />
@@ -1656,7 +1679,7 @@ function FinanceModule({ movements, payments, expenses, branches, branchFilter, 
         <MetricCard title="Cortesías" value={money(courtesyAmount)} />
       </div>
       <div className="grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-[minmax(0,1fr)_auto]">
-        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Filtrar por sede</span><select value={branchFilter} onChange={(event) => onBranchFilterChange(event.target.value)} className={fieldClass()}><option value="">Todas mis sedes</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Filtrar por sede</span><SearchableSelect value={branchFilter} onChange={onBranchFilterChange} options={branchOptions(branches)} emptyOption={{ value: "", label: "Todas mis sedes" }} className={fieldClass()} /></label>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {incomeByMethod.map((item) => <MetricCard key={item.method} title={cellTranslations.method[item.method]} value={money(item.amount)} />)}
@@ -1721,13 +1744,7 @@ function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscri
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm">
             <div><h3 className="text-lg font-black">Filtro de mensualidades</h3><p className="text-sm font-semibold text-zinc-500">Por defecto se muestran solo las activas.</p></div>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className={fieldClass("min-w-48")}>
-              <option value="active">Activas</option>
-              <option value="inactive">Inactivas</option>
-              <option value="cancelled">Canceladas</option>
-              <option value="expired">Vencidas</option>
-              <option value="all">Todas</option>
-            </select>
+            <SearchableSelect value={statusFilter} onChange={setStatusFilter} options={trainingStatusFilterOptions} className={fieldClass("min-w-48")} />
           </div>
           <DataTable title="Mensualidades de entrenamiento" rows={filteredSubscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "selected_days", "day_schedules", "payment_method", "status"]} action={(row) => <ActionButtons onDetail={() => onDetail(row)} onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
         </div>
@@ -1848,10 +1865,10 @@ function MemberModal({ open, editing, form, branches, fitnessGoals, onCreateGoal
             const required = ["first_name", "last_name", "phone"].includes(field);
             return <label key={field} className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel required={required}>{label}</RequiredLabel><input required={required} type={field === "birthdate" ? "date" : "text"} value={form[field] ?? ""} onChange={(event) => onChange({ ...form, [field]: event.target.value })} className={fieldClass()} /></label>;
           })}
-          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Sede</RequiredLabel><select required value={form.branch_id ?? ""} onChange={(event) => onChange({ ...form, branch_id: event.target.value })} className={fieldClass()}>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
-          {editing ? <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Estado</RequiredLabel><select required value={form.status ?? "active"} onChange={(event) => onChange({ ...form, status: event.target.value })} className={fieldClass()}><option value="active">Activo</option><option value="inactive">Inactivo</option><option value="blocked">Bloqueado</option></select></label> : null}
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Sede</RequiredLabel><SearchableSelect required value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} options={branchOptions(branches)} className={fieldClass()} /></label>
+          {editing ? <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Estado</RequiredLabel><SearchableSelect required value={form.status ?? "active"} onChange={(value) => onChange({ ...form, status: value })} options={memberRecordStatusOptions} className={fieldClass()} /></label> : null}
         </div>
-        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Objetivo físico<select value={form.fitness_goal ?? ""} onChange={(event) => onChange({ ...form, fitness_goal: event.target.value })} className={fieldClass()}><option value="">Sin objetivo seleccionado</option>{fitnessGoals.map((goal) => <option key={goal.id} value={goal.name}>{goal.name}</option>)}</select></label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Objetivo físico<SearchableSelect value={form.fitness_goal ?? ""} onChange={(value) => onChange({ ...form, fitness_goal: value })} options={fitnessGoalOptions(fitnessGoals)} emptyOption={{ value: "", label: "Sin objetivo seleccionado" }} className={fieldClass()} /></label>
         <div className="rounded-2xl bg-zinc-50 p-3">
           <p className="text-xs font-black uppercase tracking-wide text-zinc-500">Gestionar objetivo físico</p>
           <div className="mt-2 flex gap-2">
@@ -1871,7 +1888,7 @@ function PlanModal({ open, editing, form, onChange, onClose, onSubmit }: { open:
 }
 
 function SaleModal({ open, form, members, plans, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; plans: AnyRow[]; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-  return <Modal open={open} title="Nueva venta" subtitle="Activa una membresía y registra el pago." onClose={onClose}><form onSubmit={onSubmit} className="space-y-3"><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><select required value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione socio</option>{members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}</select></label><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Plan</RequiredLabel><select required value={form.plan_id} onChange={(event) => onChange({ ...form, plan_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione plan</option>{plans.filter((plan) => plan.is_active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {money(plan.price)}</option>)}</select></label><div className="grid gap-3 sm:grid-cols-2"><Field label="Fecha de inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required /><Field label="Descuento" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} /></div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<select value={form.status ?? "paid"} onChange={(event) => onChange({ ...form, status: event.target.value })} className={fieldClass("w-full")}><option value="paid">Pagado</option><option value="credit">Crédito</option><option value="pending">Pendiente</option><option value="courtesy">Cortesía</option></select></label>{form.status === "credit" ? <Field label="Vence el" type="date" value={form.due_on ?? ""} onChange={(value) => onChange({ ...form, due_on: value })} /> : null}<PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} /><FormActions onClose={onClose} submitLabel="Cobrar y activar" /></form></Modal>;
+  return <Modal open={open} title="Nueva venta" subtitle="Activa una membresía y registra el pago." onClose={onClose}><form onSubmit={onSubmit} className="space-y-3"><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><SearchableSelect required value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members)} emptyOption={{ value: "", label: "Seleccione socio" }} className={fieldClass("w-full")} /></label><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Plan</RequiredLabel><SearchableSelect required value={String(form.plan_id ?? "")} onChange={(value) => onChange({ ...form, plan_id: value })} options={planOptions(plans, money)} emptyOption={{ value: "", label: "Seleccione plan" }} className={fieldClass("w-full")} /></label><div className="grid gap-3 sm:grid-cols-2"><Field label="Fecha de inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required /><Field label="Descuento" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} /></div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<SearchableSelect value={form.status ?? "paid"} onChange={(value) => onChange({ ...form, status: value })} options={paymentStatusOptions} className={fieldClass("w-full")} /></label>{form.status === "credit" ? <Field label="Vence el" type="date" value={form.due_on ?? ""} onChange={(value) => onChange({ ...form, due_on: value })} /> : null}<PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} /><FormActions onClose={onClose} submitLabel="Cobrar y activar" /></form></Modal>;
 }
 
 function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChange, onClose, onSubmit }: { open: boolean; member: AnyRow | null; rows: AnyRow[]; saleForm: AnyRow; plans: AnyRow[]; onSaleChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
@@ -1884,16 +1901,13 @@ function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChan
           <div className="mt-3 grid gap-3">
             <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
               <RequiredLabel>Plan</RequiredLabel>
-              <select required value={saleForm.plan_id} onChange={(event) => onSaleChange({ ...saleForm, plan_id: event.target.value })} className={fieldClass("w-full")}>
-                <option value="">Seleccione plan</option>
-                {plans.filter((plan) => plan.is_active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {money(plan.price)}</option>)}
-              </select>
+              <SearchableSelect required value={String(saleForm.plan_id ?? "")} onChange={(value) => onSaleChange({ ...saleForm, plan_id: value })} options={planOptions(plans, money)} emptyOption={{ value: "", label: "Seleccione plan" }} className={fieldClass("w-full")} />
             </label>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Fecha de inicio" type="date" value={saleForm.starts_on} onChange={(value) => onSaleChange({ ...saleForm, starts_on: value })} required />
               <Field label="Descuento" value={saleForm.discount} onChange={(value) => onSaleChange({ ...saleForm, discount: value })} />
             </div>
-            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<select value={saleForm.status ?? "paid"} onChange={(event) => onSaleChange({ ...saleForm, status: event.target.value })} className={fieldClass("w-full")}><option value="paid">Pagado</option><option value="credit">Crédito</option><option value="pending">Pendiente</option><option value="courtesy">Cortesía</option></select></label>
+            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<SearchableSelect value={saleForm.status ?? "paid"} onChange={(value) => onSaleChange({ ...saleForm, status: value })} options={paymentStatusOptions} className={fieldClass("w-full")} /></label>
             {saleForm.status === "credit" ? <Field label="Vence el" type="date" value={saleForm.due_on ?? ""} onChange={(value) => onSaleChange({ ...saleForm, due_on: value })} /> : null}
             <PaymentFields method={saleForm.method ?? "cash"} file={saleForm.proof_photo} onMethodChange={(value) => onSaleChange({ ...saleForm, method: value, proof_photo: value === "cash" ? null : saleForm.proof_photo })} onFileChange={(file) => onSaleChange({ ...saleForm, proof_photo: file })} />
           </div>
@@ -1910,9 +1924,7 @@ function IncomeModal({ open, form, branches, onChange, onClose, onSubmit }: { op
       <form onSubmit={onSubmit} className="grid gap-3">
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           <RequiredLabel>Categoría</RequiredLabel>
-          <select required value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value })} className={fieldClass("w-full")}>
-            {incomeCategories.map((category) => <option key={category} value={category}>{category}</option>)}
-          </select>
+          <SearchableSelect required value={form.category} onChange={(value) => onChange({ ...form, category: value })} options={categoryOptions(incomeCategories)} className={fieldClass("w-full")} />
         </label>
         <Field label="Concepto" value={form.concept} onChange={(value) => onChange({ ...form, concept: value })} required />
         <Field label="Recibido de" value={form.payer_name} onChange={(value) => onChange({ ...form, payer_name: value })} />
@@ -1922,12 +1934,7 @@ function IncomeModal({ open, form, branches, onChange, onClose, onSubmit }: { op
         </div>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           Estado
-          <select value={form.status ?? "paid"} onChange={(event) => onChange({ ...form, status: event.target.value })} className={fieldClass("w-full")}>
-            <option value="paid">Pagado</option>
-            <option value="pending">Pendiente</option>
-            <option value="credit">Crédito</option>
-            <option value="courtesy">Cortesía</option>
-          </select>
+          <SearchableSelect value={form.status ?? "paid"} onChange={(value) => onChange({ ...form, status: value })} options={paymentStatusOptions} className={fieldClass("w-full")} />
         </label>
         <PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
@@ -1943,9 +1950,7 @@ function ExpenseModal({ open, form, onChange, onClose, onSubmit }: { open: boole
       <form onSubmit={onSubmit} className="grid gap-3">
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           <RequiredLabel>Categoría</RequiredLabel>
-          <select required value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value })} className={fieldClass("w-full")}>
-            {expenseCategories.map((category) => <option key={category} value={category}>{category}</option>)}
-          </select>
+          <SearchableSelect required value={form.category} onChange={(value) => onChange({ ...form, category: value })} options={categoryOptions(expenseCategories)} className={fieldClass("w-full")} />
         </label>
         <Field label="Descripción" value={form.description} onChange={(value) => onChange({ ...form, description: value })} required />
         <Field label="Proveedor" value={form.supplier} onChange={(value) => onChange({ ...form, supplier: value })} />
@@ -1976,10 +1981,7 @@ function ProductModal({ open, editing, form, branches, onChange, onClose, onSubm
         </div>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           Sede
-          <select value={form.branch_id ?? ""} onChange={(event) => onChange({ ...form, branch_id: event.target.value })} className={fieldClass("w-full")}>
-            <option value="">Sin sede específica</option>
-            {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
-          </select>
+          <SearchableSelect value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} options={branchOptions(branches)} emptyOption={{ value: "", label: "Sin sede específica" }} className={fieldClass("w-full")} />
         </label>
         <label className="flex items-center gap-2 rounded-2xl bg-zinc-50 p-4 text-sm font-bold"><input type="checkbox" checked={form.is_active} onChange={(event) => onChange({ ...form, is_active: event.target.checked })} /> Activar producto</label>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Descripción<textarea value={form.description ?? ""} onChange={(event) => onChange({ ...form, description: event.target.value })} className={fieldClass("min-h-24")} /></label>
@@ -1995,24 +1997,18 @@ function ProductSaleModal({ open, form, products, members, onChange, onClose, on
       <form onSubmit={onSubmit} className="grid gap-3">
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           Producto
-          <select required value={form.product_id} onChange={(event) => onChange({ ...form, product_id: event.target.value })} className={fieldClass("w-full")}>
-            <option value="">Seleccione producto</option>
-            {products.map((product) => <option key={product.id} value={product.id}>{product.name} · {money(product.unit_price)}</option>)}
-          </select>
+          <SearchableSelect required value={String(form.product_id ?? "")} onChange={(value) => onChange({ ...form, product_id: value })} options={productOptions(products, money)} emptyOption={{ value: "", label: "Seleccione producto" }} className={fieldClass("w-full")} />
         </label>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           Socio
-          <select value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass("w-full")}>
-            <option value="">Consumidor final</option>
-            {members.map((member) => <option key={member.id} value={member.id}>{member.first_name} {member.last_name}</option>)}
-          </select>
+          <SearchableSelect value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members, true)} emptyOption={{ value: "", label: "Consumidor final" }} className={fieldClass("w-full")} />
         </label>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Cantidad" type="number" value={form.quantity} onChange={(value) => onChange({ ...form, quantity: value })} required />
           <Field label="Precio unitario" type="number" value={form.unit_price} onChange={(value) => onChange({ ...form, unit_price: value })} required />
         </div>
         <Field label="Fecha" type="date" value={form.sale_date} onChange={(value) => onChange({ ...form, sale_date: value })} required />
-        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<select value={form.payment_status ?? "paid"} onChange={(event) => onChange({ ...form, payment_status: event.target.value })} className={fieldClass("w-full")}><option value="paid">Pagado</option><option value="credit">Crédito</option><option value="courtesy">Cortesía</option></select></label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<SearchableSelect value={form.payment_status ?? "paid"} onChange={(value) => onChange({ ...form, payment_status: value })} options={productPaymentStatusOptions} className={fieldClass("w-full")} /></label>
         {form.payment_status === "credit" ? <Field label="Vence el" type="date" value={form.due_on ?? ""} onChange={(value) => onChange({ ...form, due_on: value })} /> : null}
         <PaymentFields method={form.payment_method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, payment_method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <Field label="Notas" value={form.notes ?? ""} onChange={(value) => onChange({ ...form, notes: value })} />
@@ -2070,10 +2066,7 @@ function EquipmentModal({ open, editing, form, branches, onChange, onClose, onSu
         </div>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           Sede
-          <select value={form.branch_id ?? ""} onChange={(event) => onChange({ ...form, branch_id: event.target.value })} className={fieldClass("w-full")}>
-            <option value="">Sin sede específica</option>
-            {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
-          </select>
+          <SearchableSelect value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} options={branchOptions(branches)} emptyOption={{ value: "", label: "Sin sede específica" }} className={fieldClass("w-full")} />
         </label>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Fecha de compra" type="date" value={form.purchased_on} onChange={(value) => onChange({ ...form, purchased_on: value })} />
@@ -2081,11 +2074,7 @@ function EquipmentModal({ open, editing, form, branches, onChange, onClose, onSu
         </div>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           <RequiredLabel>Estado</RequiredLabel>
-          <select required value={form.status ?? "operational"} onChange={(event) => onChange({ ...form, status: event.target.value })} className={fieldClass("w-full")}>
-            <option value="operational">Operativo</option>
-            <option value="maintenance">En mantenimiento</option>
-            <option value="damaged">Averiado</option>
-          </select>
+          <SearchableSelect required value={form.status ?? "operational"} onChange={(value) => onChange({ ...form, status: value })} options={equipmentStatusOptions} className={fieldClass("w-full")} />
         </label>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
         <FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Registrar equipo"} />
@@ -2100,14 +2089,14 @@ function ClassModal({ open, editing, form, branches, onChange, onClose, onSubmit
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Nombre" value={form.name} onChange={(value) => onChange({ ...form, name: value })} required />
-          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Disciplina</RequiredLabel><select required value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value })} className={fieldClass()}>{classDisciplines.map((discipline) => <option key={discipline}>{discipline}</option>)}</select></label>
-          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Nivel</RequiredLabel><select required value={form.level} onChange={(event) => onChange({ ...form, level: event.target.value })} className={fieldClass()}><option>Todos</option><option>Principiante</option><option>Intermedio</option><option>Avanzado</option><option>Competidor</option></select></label>
-          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Día</RequiredLabel><select required value={form.weekday} onChange={(event) => onChange({ ...form, weekday: event.target.value })} className={fieldClass()}>{["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"].map((day) => <option key={day}>{day}</option>)}</select></label>
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Disciplina</RequiredLabel><SearchableSelect required value={form.category} onChange={(value) => onChange({ ...form, category: value })} options={stringOptions(classDisciplines)} className={fieldClass()} /></label>
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Nivel</RequiredLabel><SearchableSelect required value={form.level} onChange={(value) => onChange({ ...form, level: value })} options={classLevelOptions} className={fieldClass()} /></label>
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Día</RequiredLabel><SearchableSelect required value={form.weekday} onChange={(value) => onChange({ ...form, weekday: value })} options={weekdayOptions} className={fieldClass()} /></label>
           <Field label="Hora inicio" type="time" value={form.starts_at} onChange={(value) => onChange({ ...form, starts_at: value })} required />
           <Field label="Hora fin" type="time" value={form.ends_at} onChange={(value) => onChange({ ...form, ends_at: value })} required />
           <Field label="Cupos" type="number" value={form.capacity} onChange={(value) => onChange({ ...form, capacity: value })} required />
           <Field label="Sala / ambiente" value={form.room} onChange={(value) => onChange({ ...form, room: value })} />
-          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Sede<select value={form.branch_id ?? ""} onChange={(event) => onChange({ ...form, branch_id: event.target.value })} className={fieldClass()}><option value="">Sin sede</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Sede<SearchableSelect value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} options={branchOptions(branches)} emptyOption={{ value: "", label: "Sin sede" }} className={fieldClass()} /></label>
           <Field label="Color" type="color" value={form.color} onChange={(value) => onChange({ ...form, color: value })} required />
         </div>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Descripción<textarea value={form.description ?? ""} onChange={(event) => onChange({ ...form, description: event.target.value })} className={fieldClass("min-h-24")} /></label>
@@ -2274,7 +2263,7 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
             <Field label="Contacto" value={tenantForm.contact_name} onChange={(value) => setTenantForm({ ...tenantForm, contact_name: value })} />
             <Field label="Correo" type="email" value={tenantForm.contact_email} onChange={(value) => setTenantForm({ ...tenantForm, contact_email: value })} />
             <Field label="Teléfono" value={tenantForm.contact_phone} onChange={(value) => setTenantForm({ ...tenantForm, contact_phone: value })} />
-            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado<select value={tenantForm.billing_status} onChange={(event) => setTenantForm({ ...tenantForm, billing_status: event.target.value })} className={fieldClass()}><option value="active">Activo</option><option value="trial">Prueba</option><option value="paused">Pausado</option><option value="cancelled">Cancelado</option></select></label>
+            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado<SearchableSelect value={tenantForm.billing_status} onChange={(value) => setTenantForm({ ...tenantForm, billing_status: value })} options={tenantBillingStatusOptions} className={fieldClass()} /></label>
             <FormActions onClose={resetTenantForm} submitLabel={editingTenantId ? "Guardar cliente" : "Crear cliente"} />
           </div>
         </form>
@@ -2282,7 +2271,7 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
         <form onSubmit={saveBranch} className={cardClass()}>
           <h3 className="text-lg font-black">{editingBranchId ? "Editar sede" : "Nueva sede"}</h3>
           <div className="mt-3 grid gap-3">
-            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Cliente</RequiredLabel><select required value={branchForm.tenant_id} onChange={(event) => setBranchForm({ ...branchForm, tenant_id: event.target.value })} className={fieldClass()}><option value="">Seleccione cliente</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></label>
+            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Cliente</RequiredLabel><SearchableSelect required value={String(branchForm.tenant_id ?? "")} onChange={(value) => setBranchForm({ ...branchForm, tenant_id: value })} options={tenantOptions(tenants)} emptyOption={{ value: "", label: "Seleccione cliente" }} className={fieldClass()} /></label>
             <Field label="Nombre de sede" value={branchForm.name} onChange={(value) => setBranchForm({ ...branchForm, name: value })} required />
             <Field label="Dirección" value={branchForm.address} onChange={(value) => setBranchForm({ ...branchForm, address: value })} required />
             <Field label="Ciudad" value={branchForm.city} onChange={(value) => setBranchForm({ ...branchForm, city: value })} required />
@@ -2297,8 +2286,8 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
             <Field label="Nombre" value={userForm.name} onChange={(value) => setUserForm({ ...userForm, name: value })} required />
             <Field label="Correo" type="email" value={userForm.email} onChange={(value) => setUserForm({ ...userForm, email: value })} required />
             <Field label={editingUserId ? "Clave (vacío = sin cambios)" : "Clave inicial"} value={userForm.password} onChange={(value) => setUserForm({ ...userForm, password: value })} required={!editingUserId} />
-            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Cliente<select value={userForm.tenant_id} onChange={(event) => setUserForm({ ...userForm, tenant_id: event.target.value })} className={fieldClass()}><option value="">Administrador del sistema</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></label>
-            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Sede<select value={userForm.branch_id} onChange={(event) => setUserForm({ ...userForm, branch_id: event.target.value })} className={fieldClass()}><option value="">Todas las sedes del cliente</option>{branches.filter((branch) => !userForm.tenant_id || String(branch.tenant_id) === String(userForm.tenant_id)).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Cliente<SearchableSelect value={String(userForm.tenant_id ?? "")} onChange={(value) => setUserForm({ ...userForm, tenant_id: value })} options={tenantOptions(tenants)} emptyOption={{ value: "", label: "Administrador del sistema" }} className={fieldClass()} /></label>
+            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Sede<SearchableSelect value={String(userForm.branch_id ?? "")} onChange={(value) => setUserForm({ ...userForm, branch_id: value })} options={branchOptions(branches.filter((branch) => !userForm.tenant_id || String(branch.tenant_id) === String(userForm.tenant_id)))} emptyOption={{ value: "", label: "Todas las sedes del cliente" }} className={fieldClass()} /></label>
             <label className="flex items-center gap-2 rounded-2xl bg-zinc-50 p-4 text-sm font-bold"><input type="checkbox" checked={userForm.is_superadmin} onChange={(event) => setUserForm({ ...userForm, is_superadmin: event.target.checked })} /> Administrador del sistema</label>
             <FormActions onClose={resetUserForm} submitLabel={editingUserId ? "Guardar usuario" : "Crear usuario"} />
           </div>
@@ -2329,7 +2318,7 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
         <Field label="Buscar clientes" value={tenantSearch} onChange={(value) => { setTenantPage(1); setTenantSearch(value); }} />
         <Field label="Buscar sedes" value={branchSearch} onChange={(value) => { setBranchPage(1); setBranchSearch(value); }} />
         <Field label="Buscar usuarios" value={userSearch} onChange={(value) => { setUserPage(1); setUserSearch(value); }} />
-        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Filas por página<select value={pageSize} onChange={(event) => { setTenantPage(1); setBranchPage(1); setUserPage(1); setPageSize(Number(event.target.value)); }} className={fieldClass()}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Filas por página<SearchableSelect value={String(pageSize)} onChange={(value) => { setTenantPage(1); setBranchPage(1); setUserPage(1); setPageSize(Number(value)); }} options={pageSizeOptionsLarge} className={fieldClass()} /></label>
       </div>
 
       <div className="flex flex-col gap-4">
@@ -2386,7 +2375,7 @@ function ClassDetailModal({ open, gymClass, members, rows, bookingDate, selected
           <h3 className="text-lg font-black">Reservar socio</h3>
           <div className="mt-3 grid gap-3 sm:grid-cols-[160px_1fr_auto]">
             <input type="date" value={bookingDate} onChange={(event) => onDateChange(event.target.value)} className={fieldClass()} />
-            <select required value={selectedMemberId} onChange={(event) => onMemberChange(event.target.value)} className={fieldClass("w-full")}><option value="">Seleccione socio</option>{members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}</select>
+            <SearchableSelect required value={selectedMemberId} onChange={onMemberChange} options={memberOptions(members)} emptyOption={{ value: "", label: "Seleccione socio" }} className={fieldClass("w-full")} />
             <button className="rounded-2xl bg-[#ffcc00] px-4 py-3 text-sm font-black text-zinc-950">Reservar</button>
           </div>
         </form>
@@ -2520,13 +2509,10 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
             <RequiredLabel>Socio</RequiredLabel>
             <button type="button" onClick={onCreateMember} className="rounded-xl bg-zinc-950 px-3 py-2 text-[11px] font-black normal-case tracking-normal text-white">Crear socio</button>
           </div>
-          <select required value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass()}>
-            <option value="">Seleccione socio</option>
-            {members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}
-          </select>
+          <SearchableSelect required value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members)} emptyOption={{ value: "", label: "Seleccione socio" }} className={fieldClass()} />
         </label>
         <div className="grid gap-3 sm:grid-cols-2">
-          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Disciplina</RequiredLabel><select required value={form.discipline} onChange={(event) => onChange({ ...form, discipline: event.target.value })} className={fieldClass()}>{classDisciplines.map((discipline) => <option key={discipline}>{discipline}</option>)}</select></label>
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Disciplina</RequiredLabel><SearchableSelect required value={form.discipline} onChange={(value) => onChange({ ...form, discipline: value })} options={stringOptions(classDisciplines)} className={fieldClass()} /></label>
           <Field label="Mensualidad" type="number" value={form.monthly_fee} onChange={(value) => onChange({ ...form, monthly_fee: value })} required />
           <Field label="Inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required />
           <Field label="Sesiones por semana" type="number" value={form.sessions_per_week} onChange={(value) => {
@@ -2599,13 +2585,7 @@ function PaymentFields({ method, file, existingProofUrl, onMethodChange, onFileC
     <div className="grid gap-3">
       <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
         <RequiredLabel>Medio de pago</RequiredLabel>
-        <select required value={method || "cash"} onChange={(event) => onMethodChange(event.target.value)} className={fieldClass("w-full")}>
-          <option value="cash">Efectivo</option>
-          <option value="card">Tarjeta</option>
-          <option value="transfer">Transferencia</option>
-          <option value="yape">Yape</option>
-          <option value="plin">Plin</option>
-        </select>
+        <SearchableSelect required value={method || "cash"} onChange={onMethodChange} options={paymentMethodOptions} className={fieldClass("w-full")} />
       </label>
       {method !== "cash" ? (
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
