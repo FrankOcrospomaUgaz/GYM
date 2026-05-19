@@ -1668,28 +1668,100 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
   const roles: AnyRow[] = data.roles ?? [];
   const branches: AnyRow[] = data.branches ?? [];
   const adminRole = roles.find((role) => role.slug === "admin");
-  const [tenantForm, setTenantForm] = useState<AnyRow>({ name: "", slug: "", contact_name: "", contact_email: "", contact_phone: "", plan_name: "Profesional", billing_status: "active", primary_color: "#ffcc00", notes: "", is_active: true });
-  const [branchForm, setBranchForm] = useState<AnyRow>({ tenant_id: "", name: "", phone: "", email: "", address: "", city: "Lima", opening_hours: "", capacity: "120", is_active: true });
-  const [userForm, setUserForm] = useState<AnyRow>({ name: "", email: "", password: "GymPro2026!", tenant_id: "", branch_id: "", role_id: adminRole?.id ?? "", is_superadmin: false, is_active: true, phone: "" });
+  const [editingTenantId, setEditingTenantId] = useState<number | null>(null);
+  const [editingBranchId, setEditingBranchId] = useState<number | null>(null);
+  const [editingUserId, setEditingUserId] = useState<number | null>(null);
+
+  const emptyTenant: AnyRow = { name: "", slug: "", contact_name: "", contact_email: "", contact_phone: "", plan_name: "Profesional", billing_status: "active", primary_color: "#ffcc00", notes: "", is_active: true };
+  const emptyBranch: AnyRow = { tenant_id: "", name: "", phone: "", email: "", address: "", city: "Lima", opening_hours: "", capacity: "120", is_active: true };
+  const emptyUser: AnyRow = { name: "", email: "", password: "GymPro2026!", tenant_id: "", branch_id: "", role_id: adminRole?.id ?? "", is_superadmin: false, is_active: true, phone: "" };
+
+  const [tenantForm, setTenantForm] = useState<AnyRow>(emptyTenant);
+  const [branchForm, setBranchForm] = useState<AnyRow>(emptyBranch);
+  const [userForm, setUserForm] = useState<AnyRow>(emptyUser);
+
+  useEffect(() => {
+    if (adminRole?.id && !userForm.role_id) {
+      setUserForm((current) => ({ ...current, role_id: adminRole.id }));
+    }
+  }, [adminRole?.id, userForm.role_id]);
+
+  function resetTenantForm() {
+    setEditingTenantId(null);
+    setTenantForm(emptyTenant);
+  }
+
+  function resetBranchForm() {
+    setEditingBranchId(null);
+    setBranchForm(emptyBranch);
+  }
+
+  function resetUserForm() {
+    setEditingUserId(null);
+    setUserForm({ ...emptyUser, role_id: adminRole?.id ?? "" });
+  }
+
+  function openEditTenant(tenant: AnyRow) {
+    setEditingTenantId(tenant.id);
+    setTenantForm({ ...emptyTenant, ...tenant });
+  }
+
+  function openEditBranch(branch: AnyRow) {
+    setEditingBranchId(branch.id);
+    setBranchForm({ ...emptyBranch, ...branch });
+  }
+
+  function openEditUser(user: AnyRow) {
+    setEditingUserId(user.id);
+    setUserForm({
+      name: user.name ?? "",
+      email: user.email ?? "",
+      password: "",
+      tenant_id: user.tenant_id ? String(user.tenant_id) : "",
+      branch_id: user.branch_id ? String(user.branch_id) : "",
+      role_id: user.role_id ? String(user.role_id) : adminRole?.id ?? "",
+      is_superadmin: Boolean(user.is_superadmin),
+      is_active: Boolean(user.is_active),
+      phone: user.phone ?? "",
+    });
+  }
 
   async function saveTenant(event: FormEvent) {
     event.preventDefault();
-    await httpClient.post("/api/gym/saas/tenants", tenantForm);
-    setTenantForm({ name: "", slug: "", contact_name: "", contact_email: "", contact_phone: "", plan_name: "Profesional", billing_status: "active", primary_color: "#ffcc00", notes: "", is_active: true });
+    const payload = { ...tenantForm };
+    if (editingTenantId) {
+      await httpClient.put(`/api/gym/saas/tenants/${editingTenantId}`, payload);
+    } else {
+      await httpClient.post("/api/gym/saas/tenants", payload);
+    }
+    resetTenantForm();
     await reload();
   }
 
   async function saveBranch(event: FormEvent) {
     event.preventDefault();
-    await httpClient.post("/api/gym/saas/branches", { ...branchForm, capacity: Number(branchForm.capacity) });
-    setBranchForm({ tenant_id: "", name: "", phone: "", email: "", address: "", city: "Lima", opening_hours: "", capacity: "120", is_active: true });
+    const payload = { ...branchForm, capacity: Number(branchForm.capacity) };
+    if (editingBranchId) {
+      await httpClient.put(`/api/gym/saas/branches/${editingBranchId}`, payload);
+    } else {
+      await httpClient.post("/api/gym/saas/branches", payload);
+    }
+    resetBranchForm();
     await reload();
   }
 
   async function saveUser(event: FormEvent) {
     event.preventDefault();
-    await httpClient.post("/api/gym/saas/users", { ...userForm, role_id: userForm.role_id || adminRole?.id || null });
-    setUserForm({ name: "", email: "", password: "GymPro2026!", tenant_id: "", branch_id: "", role_id: adminRole?.id ?? "", is_superadmin: false, is_active: true, phone: "" });
+    const payload: AnyRow = { ...userForm, role_id: userForm.role_id || adminRole?.id || null };
+    if (editingUserId && !payload.password) {
+      delete payload.password;
+    }
+    if (editingUserId) {
+      await httpClient.put(`/api/gym/saas/users/${editingUserId}`, payload);
+    } else {
+      await httpClient.post("/api/gym/saas/users", payload);
+    }
+    resetUserForm();
     await reload();
   }
 
@@ -1700,11 +1772,16 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
     await reload();
   }
 
+  const branchRows = branches.map((branch) => ({
+    ...branch,
+    tenant_name: tenants.find((tenant) => String(tenant.id) === String(branch.tenant_id))?.name ?? "",
+  }));
+
   return (
     <Module title="Sistema SaaS" subtitle="Clientes, sedes, usuarios administradores y módulos habilitados por cliente.">
       <div className="grid gap-5 xl:grid-cols-3">
         <form onSubmit={saveTenant} className={cardClass()}>
-          <h3 className="text-lg font-black">Nuevo cliente</h3>
+          <h3 className="text-lg font-black">{editingTenantId ? "Editar cliente" : "Nuevo cliente"}</h3>
           <div className="mt-3 grid gap-3">
             <Field label="Nombre comercial" value={tenantForm.name} onChange={(value) => setTenantForm({ ...tenantForm, name: value, slug: value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") })} required />
             <Field label="Código URL" value={tenantForm.slug} onChange={(value) => setTenantForm({ ...tenantForm, slug: value })} required />
@@ -1712,32 +1789,32 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
             <Field label="Correo" type="email" value={tenantForm.contact_email} onChange={(value) => setTenantForm({ ...tenantForm, contact_email: value })} />
             <Field label="Teléfono" value={tenantForm.contact_phone} onChange={(value) => setTenantForm({ ...tenantForm, contact_phone: value })} />
             <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado<select value={tenantForm.billing_status} onChange={(event) => setTenantForm({ ...tenantForm, billing_status: event.target.value })} className={fieldClass()}><option value="active">Activo</option><option value="trial">Prueba</option><option value="paused">Pausado</option><option value="cancelled">Cancelado</option></select></label>
-            <FormActions onClose={() => setTenantForm({ ...tenantForm, name: "", slug: "" })} submitLabel="Crear cliente" />
+            <FormActions onClose={resetTenantForm} submitLabel={editingTenantId ? "Guardar cliente" : "Crear cliente"} />
           </div>
         </form>
 
         <form onSubmit={saveBranch} className={cardClass()}>
-          <h3 className="text-lg font-black">Nueva sede</h3>
+          <h3 className="text-lg font-black">{editingBranchId ? "Editar sede" : "Nueva sede"}</h3>
           <div className="mt-3 grid gap-3">
             <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Cliente</RequiredLabel><select required value={branchForm.tenant_id} onChange={(event) => setBranchForm({ ...branchForm, tenant_id: event.target.value })} className={fieldClass()}><option value="">Seleccione cliente</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></label>
             <Field label="Nombre de sede" value={branchForm.name} onChange={(value) => setBranchForm({ ...branchForm, name: value })} required />
             <Field label="Dirección" value={branchForm.address} onChange={(value) => setBranchForm({ ...branchForm, address: value })} required />
             <Field label="Ciudad" value={branchForm.city} onChange={(value) => setBranchForm({ ...branchForm, city: value })} required />
             <Field label="Aforo" type="number" value={branchForm.capacity} onChange={(value) => setBranchForm({ ...branchForm, capacity: value })} required />
-            <FormActions onClose={() => setBranchForm({ ...branchForm, name: "", address: "" })} submitLabel="Crear sede" />
+            <FormActions onClose={resetBranchForm} submitLabel={editingBranchId ? "Guardar sede" : "Crear sede"} />
           </div>
         </form>
 
         <form onSubmit={saveUser} className={cardClass()}>
-          <h3 className="text-lg font-black">Usuario cliente</h3>
+          <h3 className="text-lg font-black">{editingUserId ? "Editar usuario" : "Usuario cliente"}</h3>
           <div className="mt-3 grid gap-3">
             <Field label="Nombre" value={userForm.name} onChange={(value) => setUserForm({ ...userForm, name: value })} required />
             <Field label="Correo" type="email" value={userForm.email} onChange={(value) => setUserForm({ ...userForm, email: value })} required />
-            <Field label="Clave inicial" value={userForm.password} onChange={(value) => setUserForm({ ...userForm, password: value })} required />
+            <Field label={editingUserId ? "Clave (vacío = sin cambios)" : "Clave inicial"} value={userForm.password} onChange={(value) => setUserForm({ ...userForm, password: value })} required={!editingUserId} />
             <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Cliente<select value={userForm.tenant_id} onChange={(event) => setUserForm({ ...userForm, tenant_id: event.target.value })} className={fieldClass()}><option value="">Administrador del sistema</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></label>
             <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Sede<select value={userForm.branch_id} onChange={(event) => setUserForm({ ...userForm, branch_id: event.target.value })} className={fieldClass()}><option value="">Todas las sedes del cliente</option>{branches.filter((branch) => !userForm.tenant_id || String(branch.tenant_id) === String(userForm.tenant_id)).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
             <label className="flex items-center gap-2 rounded-2xl bg-zinc-50 p-4 text-sm font-bold"><input type="checkbox" checked={userForm.is_superadmin} onChange={(event) => setUserForm({ ...userForm, is_superadmin: event.target.checked })} /> Administrador del sistema</label>
-            <FormActions onClose={() => setUserForm({ ...userForm, name: "", email: "" })} submitLabel="Crear usuario" />
+            <FormActions onClose={resetUserForm} submitLabel={editingUserId ? "Guardar usuario" : "Crear usuario"} />
           </div>
         </form>
       </div>
@@ -1761,7 +1838,10 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
           })}
         </div>
       </div>
-      <DataTable title="Usuarios del sistema" rows={data.users ?? []} columns={["name", "email", "password", "tenant_name", "branch_name", "role_name", "is_superadmin", "is_active"]} />
+
+      <DataTable title="Clientes SaaS" rows={tenants} columns={["name", "slug", "contact_email", "contact_phone", "plan_name", "billing_status", "is_active"]} action={(row) => <button type="button" onClick={() => openEditTenant(row)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Editar</button>} />
+      <DataTable title="Sedes SaaS" rows={branchRows} columns={["name", "tenant_name", "phone", "email", "city", "capacity", "is_active"]} action={(row) => <button type="button" onClick={() => openEditBranch(row)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Editar</button>} />
+      <DataTable title="Usuarios del sistema" rows={data.users ?? []} columns={["name", "email", "tenant_name", "branch_name", "role_name", "is_superadmin", "is_active"]} action={(row) => <button type="button" onClick={() => openEditUser(row)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Editar</button>} />
     </Module>
   );
 }

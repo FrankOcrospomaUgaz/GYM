@@ -1143,7 +1143,7 @@ class GymController extends Controller
                 ->limit(120)
                 ->get(),
             'roles' => DB::table('roles')->select('id', 'name', 'slug')->orderBy('name')->get(),
-            'branches' => DB::table('gym_branches')->select('id', 'tenant_id', 'name')->orderBy('name')->get(),
+            'branches' => DB::table('gym_branches')->orderBy('name')->get(),
         ]);
     }
 
@@ -1224,6 +1224,55 @@ class GymController extends Controller
         }
 
         return response()->json($user->authPayload(), 201);
+    }
+
+    public function updateTenantUser(Request $request, int $user): JsonResponse
+    {
+        $this->requireSystemAdmin($request);
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'email' => ['required', 'email', 'max:120', Rule::unique('users', 'email')->ignore($user)],
+            'password' => ['nullable', 'string', 'min:8'],
+            'tenant_id' => ['nullable', 'exists:gym_tenants,id'],
+            'branch_id' => ['nullable', 'exists:gym_branches,id'],
+            'role_id' => ['nullable', 'exists:roles,id'],
+            'is_superadmin' => ['required', 'boolean'],
+            'is_active' => ['required', 'boolean'],
+            'phone' => ['nullable', 'string', 'max:40'],
+        ]);
+        if (!empty($data['password'])) {
+            $data['password'] = Hash::make($data['password']);
+        } else {
+            unset($data['password']);
+        }
+
+        User::query()->where('id', $user)->update($data);
+        DB::table('gym_branch_user')->where('user_id', $user)->delete();
+        if (!empty($data['branch_id'])) {
+            DB::table('gym_branch_user')->insert(['user_id' => $user, 'branch_id' => $data['branch_id']]);
+        }
+
+        return response()->json(User::query()->findOrFail($user));
+    }
+
+    public function updateBranch(Request $request, int $branch): JsonResponse
+    {
+        $this->requireSystemAdmin($request);
+        $data = $request->validate([
+            'tenant_id' => ['required', 'exists:gym_tenants,id'],
+            'name' => ['required', 'string', 'max:120'],
+            'phone' => ['nullable', 'string', 'max:40'],
+            'email' => ['nullable', 'email', 'max:120'],
+            'address' => ['required', 'string', 'max:180'],
+            'city' => ['required', 'string', 'max:80'],
+            'opening_hours' => ['nullable', 'string', 'max:180'],
+            'capacity' => ['required', 'integer', 'min:1', 'max:10000'],
+            'is_active' => ['required', 'boolean'],
+        ]);
+        $data['updated_at'] = now();
+        DB::table('gym_branches')->where('id', $branch)->update($data);
+
+        return response()->json(DB::table('gym_branches')->find($branch));
     }
 
     public function storeBranch(Request $request): JsonResponse
