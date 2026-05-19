@@ -364,12 +364,12 @@ class GymSeeder extends Seeder
         );
 
         DB::table('gym_notifications')->updateOrInsert(
-            ['type' => 'membership_expiry', 'title' => 'Membresías por vencer'],
-            ['tenant_id' => $tenantId, 'body' => 'Hay socios con membresías próximas a vencer. Contactar para renovación.', 'severity' => 'warning', 'user_id' => $admin->id, 'scheduled_for' => now(), 'created_at' => now(), 'updated_at' => now()]
+            ['type' => 'membership_expiry', 'tenant_id' => $tenantId],
+            ['title' => 'Membresías por vencer', 'body' => 'Hay socios con membresías próximas a vencer. Contactar para renovación.', 'severity' => 'warning', 'user_id' => $admin->id, 'scheduled_for' => now(), 'created_at' => now(), 'updated_at' => now()]
         );
         DB::table('gym_notifications')->updateOrInsert(
-            ['type' => 'equipment_maintenance', 'title' => 'Mantenimiento pendiente'],
-            ['tenant_id' => $tenantId, 'body' => 'La bicicleta spinning requiere revisión técnica.', 'severity' => 'danger', 'user_id' => $admin->id, 'scheduled_for' => now(), 'created_at' => now(), 'updated_at' => now()]
+            ['type' => 'equipment_maintenance', 'tenant_id' => $tenantId],
+            ['title' => 'Mantenimiento pendiente', 'body' => 'La bicicleta spinning requiere revisión técnica.', 'severity' => 'danger', 'user_id' => $admin->id, 'scheduled_for' => now(), 'created_at' => now(), 'updated_at' => now()]
         );
 
         DB::table('gym_plans')->updateOrInsert(

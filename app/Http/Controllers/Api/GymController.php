@@ -166,6 +166,9 @@ class GymController extends Controller
     public function members(Request $request): JsonResponse
     {
         $search = trim((string) $request->query('search', ''));
+        $page = max(1, (int) $request->query('page', 1));
+        $perPage = min(100, max(10, (int) $request->query('per_page', 25)));
+
         $query = $this->scopeTenant(DB::table('gym_members'), $request, 'gym_members')
             ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_members.branch_id')
             ->select('gym_members.*', 'gym_branches.name as branch_name')
@@ -182,7 +185,18 @@ class GymController extends Controller
             });
         }
 
-        return response()->json($query->limit(80)->get());
+        if ($request->filled('status')) {
+            $query->where('gym_members.status', (string) $request->query('status'));
+        }
+
+        if ($request->filled('branch_id')) {
+            $query->where('gym_members.branch_id', (int) $request->query('branch_id'));
+        }
+
+        $total = $query->count();
+        $rows = $query->skip(($page - 1) * $perPage)->take($perPage)->get();
+
+        return response()->json(['rows' => $rows, 'total' => $total]);
     }
 
     public function storeMember(Request $request): JsonResponse
@@ -191,8 +205,8 @@ class GymController extends Controller
             'first_name' => ['required', 'string', 'max:80'],
             'last_name' => ['required', 'string', 'max:80'],
             'document_type' => ['required', 'string', 'max:20'],
-            'dni' => ['required', 'digits:8', Rule::unique('gym_members', 'dni')],
-            'document_number' => ['nullable', 'string', 'max:30', Rule::unique('gym_members', 'document_number')],
+            'dni' => ['nullable', 'regex:/^(?:\d{8}|0)$/'],
+            'document_number' => ['nullable', 'string', 'max:30'],
             'email' => ['nullable', 'email', 'max:120'],
             'phone' => ['required', 'string', 'max:30'],
             'birthdate' => ['nullable', 'date'],
@@ -205,8 +219,17 @@ class GymController extends Controller
             'branch_id' => ['nullable', 'exists:gym_branches,id'],
         ]);
 
+        if (! empty($data['dni']) && $data['dni'] !== '0' && DB::table('gym_members')->where('dni', $data['dni'])->exists()) {
+            abort(422, 'El DNI ya está registrado.');
+        }
+
+        if (! empty($data['document_number']) && $data['document_number'] !== '0' && DB::table('gym_members')->where('document_number', $data['document_number'])->exists()) {
+            abort(422, 'El número de documento ya está registrado.');
+        }
+
         $data['tenant_id'] = $this->defaultTenantId($request);
         $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
+        $data['dni'] = $data['dni'] ?? '0';
         $data['document_number'] = $data['document_number'] ?? $data['dni'];
         $nextId = ((int) DB::table('gym_members')->max('id')) + 1;
         $data['member_code'] = 'M-'.str_pad((string) $nextId, 4, '0', STR_PAD_LEFT);
@@ -226,8 +249,8 @@ class GymController extends Controller
             'first_name' => ['required', 'string', 'max:80'],
             'last_name' => ['required', 'string', 'max:80'],
             'document_type' => ['required', 'string', 'max:20'],
-            'dni' => ['required', 'digits:8', Rule::unique('gym_members', 'dni')->ignore($member)],
-            'document_number' => ['nullable', 'string', 'max:30', Rule::unique('gym_members', 'document_number')->ignore($member)],
+            'dni' => ['nullable', 'regex:/^(?:\d{8}|0)$/'],
+            'document_number' => ['nullable', 'string', 'max:30'],
             'email' => ['nullable', 'email', 'max:120'],
             'phone' => ['required', 'string', 'max:30'],
             'birthdate' => ['nullable', 'date'],
@@ -240,6 +263,15 @@ class GymController extends Controller
             'status' => ['required', Rule::in(['active', 'inactive', 'blocked'])],
             'branch_id' => ['nullable', 'exists:gym_branches,id'],
         ]);
+        if (! empty($data['dni']) && $data['dni'] !== '0' && DB::table('gym_members')->where('dni', $data['dni'])->where('id', '<>', $member)->exists()) {
+            abort(422, 'El DNI ya está registrado.');
+        }
+
+        if (! empty($data['document_number']) && $data['document_number'] !== '0' && DB::table('gym_members')->where('document_number', $data['document_number'])->where('id', '<>', $member)->exists()) {
+            abort(422, 'El número de documento ya está registrado.');
+        }
+
+        $data['dni'] = $data['dni'] ?? '0';
         $data['document_number'] = $data['document_number'] ?? $data['dni'];
         $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
         $data['updated_at'] = now();

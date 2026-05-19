@@ -518,6 +518,11 @@ export function GymPage() {
   const [expenseForm, setExpenseForm] = useState<AnyRow>({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", proof_photo: null });
   const [classForm, setClassForm] = useState<AnyRow>(emptyClassForm);
   const [classModalOpen, setClassModalOpen] = useState(false);
+  const [memberStatusFilter, setMemberStatusFilter] = useState<string>("");
+  const [memberBranchFilter, setMemberBranchFilter] = useState<string>("");
+  const [membersPage, setMembersPage] = useState(1);
+  const [membersPerPage, setMembersPerPage] = useState(25);
+  const [memberTotal, setMemberTotal] = useState(0);
   const [classesViewMode, setClassesViewMode] = useState<ClassViewMode>("mes");
   const [classDetailOpen, setClassDetailOpen] = useState(false);
   const [selectedClass, setSelectedClass] = useState<AnyRow | null>(null);
@@ -548,6 +553,7 @@ export function GymPage() {
   const [browserNotificationsEnabled, setBrowserNotificationsEnabled] = useState(() => typeof Notification !== "undefined" && Notification.permission === "granted");
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
+  const [memberSearch, setMemberSearch] = useState("");
 
   const activeMembers = useMemo(() => members.filter((member) => member.status === "active"), [members]);
   const cashMovements = useMemo(() => buildCashMovements(payments, expenses), [payments, expenses]);
@@ -571,7 +577,7 @@ export function GymPage() {
       httpClient.get("/api/gym/branches"),
       httpClient.get("/api/gym/fitness-goals"),
       httpClient.get("/api/gym/plans"),
-      httpClient.get("/api/gym/members", { params: { search } }),
+      httpClient.get("/api/gym/members", { params: { search: memberSearch, status: memberStatusFilter, branch_id: memberBranchFilter, page: membersPage, per_page: membersPerPage } }),
       httpClient.get("/api/gym/memberships"),
       httpClient.get("/api/gym/payments"),
       httpClient.get("/api/gym/expenses"),
@@ -585,7 +591,8 @@ export function GymPage() {
     setBranches(branchRes.data);
     setFitnessGoals(goalRes.data);
     setPlans(planRes.data);
-    setMembers(memberRes.data);
+    setMembers(memberRes.data.rows ?? memberRes.data);
+    setMemberTotal(memberRes.data.total ?? (memberRes.data?.length ?? 0));
     setMemberships(membershipRes.data);
     setPayments(paymentRes.data);
     setExpenses(expenseRes.data);
@@ -602,7 +609,7 @@ export function GymPage() {
 
   useEffect(() => {
     void loadAll();
-  }, []);
+  }, [membersPage, membersPerPage, memberStatusFilter, memberBranchFilter, memberSearch]);
 
   useEffect(() => {
     if (!notifications.length || typeof Notification === "undefined" || Notification.permission !== "granted") return;
@@ -676,7 +683,13 @@ export function GymPage() {
   function openEditMember(member: AnyRow) {
     setEditingMemberId(member.id);
     setMemberModalContext("general");
-    setMemberForm({ ...emptyMember, ...member, branch_id: member.branch_id ? String(member.branch_id) : "" });
+    setMemberForm({
+      ...emptyMember,
+      ...member,
+      dni: member.dni === "0" ? "" : member.dni,
+      document_number: member.document_number === "0" ? "" : member.document_number,
+      branch_id: member.branch_id ? String(member.branch_id) : "",
+    });
     setMemberModalOpen(true);
   }
 
@@ -1100,8 +1113,8 @@ export function GymPage() {
             </div>
             <div className="flex w-full items-center rounded-2xl border border-zinc-200 bg-white px-3 shadow-sm lg:ml-auto lg:min-w-[360px] lg:max-w-lg">
               <Search className="h-4 w-4 shrink-0 text-zinc-400" />
-              <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => event.key === "Enter" && loadAll()} placeholder="Buscar socio, DNI o código" className="h-11 min-w-0 flex-1 border-0 bg-transparent px-3 text-sm outline-none" />
-              <button onClick={() => void loadAll()} className="rounded-xl bg-zinc-950 px-3 py-2 text-xs font-bold text-white">Buscar</button>
+              <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => event.key === "Enter" && (setMembersPage(1), setMemberSearch(search))} placeholder="Buscar socio, DNI o código" className="h-11 min-w-0 flex-1 border-0 bg-transparent px-3 text-sm outline-none" />
+              <button onClick={() => { setMembersPage(1); setMemberSearch(search); }} className="rounded-xl bg-zinc-950 px-3 py-2 text-xs font-bold text-white">Buscar</button>
             </div>
             <div className="relative">
               <button type="button" onClick={() => setNotificationPanelOpen((open) => !open)} className="relative grid h-11 w-11 place-items-center rounded-2xl bg-zinc-950 text-white shadow-sm" aria-label="Ver notificaciones">
@@ -1116,7 +1129,22 @@ export function GymPage() {
 
         <section className="space-y-5 p-3 sm:p-4 lg:space-y-6 lg:p-8">
           {tab === "dashboard" ? <Dashboard dashboard={dashboard} activeMembers={activeMembers.length} membershipsCount={memberships.length} notifications={notifications} members={members} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={setCredentialMember} /> : null}
-          {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio"><DataTable title="Socios registrados" rows={members} columns={["member_code", "dni", "first_name", "last_name", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<><IconButton title="Credencial digital" onClick={() => setCredentialMember(row)} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><QrCode className="h-4 w-4" /></IconButton><button onClick={() => void checkIn(row.id)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Ingreso</button><button onClick={() => void openMemberMemberships(row)} className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">Membresías</button></>} />} /></Module> : null}
+          {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio">
+            <div className="mb-4 grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-[repeat(3,minmax(0,1fr))]">
+              <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Estado</span><select value={memberStatusFilter} onChange={(event) => { setMembersPage(1); setMemberStatusFilter(event.target.value); }} className={fieldClass()}><option value="">Todos</option><option value="active">Activo</option><option value="inactive">Inactivo</option><option value="blocked">Bloqueado</option></select></label>
+              <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Sede</span><select value={memberBranchFilter} onChange={(event) => { setMembersPage(1); setMemberBranchFilter(event.target.value); }} className={fieldClass()}><option value="">Todas</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+              <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Registros por página</span><select value={membersPerPage} onChange={(event) => { setMembersPage(1); setMembersPerPage(Number(event.target.value)); }} className={fieldClass()}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option></select></label>
+            </div>
+            <DataTable title="Socios registrados" rows={members} columns={["member_code", "dni", "first_name", "last_name", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<><IconButton title="Credencial digital" onClick={() => setCredentialMember(row)} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><QrCode className="h-4 w-4" /></IconButton><button onClick={() => void checkIn(row.id)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Ingreso</button><button onClick={() => void openMemberMemberships(row)} className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">Membresías</button></>} />} />
+            <div className="mt-4 flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-zinc-500">Mostrando {members.length} de {memberTotal} resultados</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" disabled={membersPage <= 1} onClick={() => setMembersPage((current) => Math.max(1, current - 1))} className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs font-black text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50">Anterior</button>
+                <span className="text-xs text-zinc-500">Página {membersPage}</span>
+                <button type="button" disabled={members.length < membersPerPage} onClick={() => setMembersPage((current) => current + 1)} className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs font-black text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50">Siguiente</button>
+              </div>
+            </div>
+          </Module> : null}
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
           {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} /></Module> : null}
@@ -1492,9 +1520,9 @@ function MemberModal({ open, editing, form, branches, fitnessGoals, onCreateGoal
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
-            <RequiredLabel>DNI</RequiredLabel>
+            <span>DNI</span>
             <div className="flex gap-2">
-              <input required maxLength={8} value={form.dni ?? ""} onChange={(event) => onChange({ ...form, dni: event.target.value.replace(/\D/g, "").slice(0, 8), document_number: event.target.value.replace(/\D/g, "").slice(0, 8) })} className={fieldClass("min-w-0 flex-1")} />
+              <input maxLength={8} value={form.dni ?? ""} onChange={(event) => onChange({ ...form, dni: event.target.value.replace(/\D/g, "").slice(0, 8), document_number: event.target.value.replace(/\D/g, "").slice(0, 8) })} className={fieldClass("min-w-0 flex-1")} />
               <button type="button" onClick={() => void onSearchDni(form.dni)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Buscar</button>
             </div>
           </label>
@@ -1679,6 +1707,13 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
   const [tenantForm, setTenantForm] = useState<AnyRow>(emptyTenant);
   const [branchForm, setBranchForm] = useState<AnyRow>(emptyBranch);
   const [userForm, setUserForm] = useState<AnyRow>(emptyUser);
+  const [tenantSearch, setTenantSearch] = useState("");
+  const [branchSearch, setBranchSearch] = useState("");
+  const [userSearch, setUserSearch] = useState("");
+  const [tenantPage, setTenantPage] = useState(1);
+  const [branchPage, setBranchPage] = useState(1);
+  const [userPage, setUserPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   useEffect(() => {
     if (adminRole?.id && !userForm.role_id) {
@@ -1775,7 +1810,30 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
   const branchRows = branches.map((branch) => ({
     ...branch,
     tenant_name: tenants.find((tenant) => String(tenant.id) === String(branch.tenant_id))?.name ?? "",
-  }));
+  })) as AnyRow[];
+
+  const filteredTenants = tenants.filter((tenant) => {
+    const term = tenantSearch.toLowerCase().trim();
+    return term === "" || [tenant.name, tenant.slug, tenant.contact_email, tenant.contact_phone].some((value) => String(value ?? "").toLowerCase().includes(term));
+  });
+
+  const filteredBranches = branchRows.filter((branch: AnyRow) => {
+    const term = branchSearch.toLowerCase().trim();
+    return term === "" || [branch.name, branch.tenant_name, branch.email, branch.city].some((value) => String(value ?? "").toLowerCase().includes(term));
+  });
+
+  const filteredUsers = (data.users ?? []).filter((user: AnyRow) => {
+    const term = userSearch.toLowerCase().trim();
+    return term === "" || [user.name, user.email, user.tenant_name, user.branch_name, user.role_name].some((value) => String(value ?? "").toLowerCase().includes(term));
+  });
+
+  const displayedTenants = filteredTenants.slice((tenantPage - 1) * pageSize, tenantPage * pageSize);
+  const displayedBranches = filteredBranches.slice((branchPage - 1) * pageSize, branchPage * pageSize);
+  const displayedUsers = filteredUsers.slice((userPage - 1) * pageSize, userPage * pageSize);
+
+  const tenantPages = Math.max(1, Math.ceil(filteredTenants.length / pageSize));
+  const branchPages = Math.max(1, Math.ceil(filteredBranches.length / pageSize));
+  const userPages = Math.max(1, Math.ceil(filteredUsers.length / pageSize));
 
   return (
     <Module title="Sistema SaaS" subtitle="Clientes, sedes, usuarios administradores y módulos habilitados por cliente.">
@@ -1839,9 +1897,50 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
         </div>
       </div>
 
-      <DataTable title="Clientes SaaS" rows={tenants} columns={["name", "slug", "contact_email", "contact_phone", "plan_name", "billing_status", "is_active"]} action={(row) => <button type="button" onClick={() => openEditTenant(row)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Editar</button>} />
-      <DataTable title="Sedes SaaS" rows={branchRows} columns={["name", "tenant_name", "phone", "email", "city", "capacity", "is_active"]} action={(row) => <button type="button" onClick={() => openEditBranch(row)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Editar</button>} />
-      <DataTable title="Usuarios del sistema" rows={data.users ?? []} columns={["name", "email", "tenant_name", "branch_name", "role_name", "is_superadmin", "is_active"]} action={(row) => <button type="button" onClick={() => openEditUser(row)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Editar</button>} />
+      <div className="grid gap-4 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-4">
+        <Field label="Buscar clientes" value={tenantSearch} onChange={(value) => { setTenantPage(1); setTenantSearch(value); }} />
+        <Field label="Buscar sedes" value={branchSearch} onChange={(value) => { setBranchPage(1); setBranchSearch(value); }} />
+        <Field label="Buscar usuarios" value={userSearch} onChange={(value) => { setUserPage(1); setUserSearch(value); }} />
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Filas por página<select value={pageSize} onChange={(event) => { setTenantPage(1); setBranchPage(1); setUserPage(1); setPageSize(Number(event.target.value)); }} className={fieldClass()}><option value={10}>10</option><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label>
+      </div>
+
+      <div className="flex flex-col gap-4">
+        <div className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4">
+          <DataTable title="Clientes SaaS" rows={displayedTenants} columns={["name", "slug", "contact_email", "contact_phone", "plan_name", "billing_status", "is_active"]} action={(row) => <button type="button" onClick={() => openEditTenant(row)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Editar</button>} />
+          <div className="mt-4 flex items-center justify-between gap-3 text-sm text-zinc-500">
+            <span>Mostrando {displayedTenants.length} de {filteredTenants.length} clientes</span>
+            <div className="flex items-center gap-2">
+              <button disabled={tenantPage <= 1} onClick={() => setTenantPage((current) => Math.max(1, current - 1))} className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs font-black disabled:cursor-not-allowed disabled:opacity-50">Anterior</button>
+              <span>Página {tenantPage} de {tenantPages}</span>
+              <button disabled={tenantPage >= tenantPages} onClick={() => setTenantPage((current) => Math.min(tenantPages, current + 1))} className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs font-black disabled:cursor-not-allowed disabled:opacity-50">Siguiente</button>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4">
+          <DataTable title="Sedes SaaS" rows={displayedBranches} columns={["name", "tenant_name", "phone", "email", "city", "capacity", "is_active"]} action={(row) => <button type="button" onClick={() => openEditBranch(row)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Editar</button>} />
+          <div className="mt-4 flex items-center justify-between gap-3 text-sm text-zinc-500">
+            <span>Mostrando {displayedBranches.length} de {filteredBranches.length} sedes</span>
+            <div className="flex items-center gap-2">
+              <button disabled={branchPage <= 1} onClick={() => setBranchPage((current) => Math.max(1, current - 1))} className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs font-black disabled:cursor-not-allowed disabled:opacity-50">Anterior</button>
+              <span>Página {branchPage} de {branchPages}</span>
+              <button disabled={branchPage >= branchPages} onClick={() => setBranchPage((current) => Math.min(branchPages, current + 1))} className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs font-black disabled:cursor-not-allowed disabled:opacity-50">Siguiente</button>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4">
+          <DataTable title="Usuarios del sistema" rows={displayedUsers} columns={["name", "email", "tenant_name", "branch_name", "role_name", "is_superadmin", "is_active"]} action={(row) => <button type="button" onClick={() => openEditUser(row)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Editar</button>} />
+          <div className="mt-4 flex items-center justify-between gap-3 text-sm text-zinc-500">
+            <span>Mostrando {displayedUsers.length} de {filteredUsers.length} usuarios</span>
+            <div className="flex items-center gap-2">
+              <button disabled={userPage <= 1} onClick={() => setUserPage((current) => Math.max(1, current - 1))} className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs font-black disabled:cursor-not-allowed disabled:opacity-50">Anterior</button>
+              <span>Página {userPage} de {userPages}</span>
+              <button disabled={userPage >= userPages} onClick={() => setUserPage((current) => Math.min(userPages, current + 1))} className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs font-black disabled:cursor-not-allowed disabled:opacity-50">Siguiente</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </Module>
   );
 }
