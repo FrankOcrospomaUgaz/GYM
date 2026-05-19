@@ -4,7 +4,7 @@ import { httpClient } from "../http/client";
 import { useAuth } from "../context/AuthContext";
 
 type AnyRow = Record<string, any>;
-type Tab = "dashboard" | "members" | "plans" | "memberships" | "attendance" | "classes" | "finance" | "equipment" | "system";
+type Tab = "dashboard" | "members" | "plans" | "memberships" | "attendance" | "classes" | "finance" | "products" | "equipment" | "system";
 type ConfirmState = { title: string; body: string; onConfirm: () => Promise<void> } | null;
 type ErrorState = { title: string; message: string; details?: string[] } | null;
 type MemberModalContext = "general" | "training";
@@ -33,6 +33,7 @@ const tabs: { id: Tab; label: string; icon: any }[] = [
   { id: "attendance", label: "Accesos", icon: QrCode },
   { id: "classes", label: "Clases", icon: CalendarDays },
   { id: "finance", label: "Caja", icon: Banknote },
+  { id: "products", label: "Productos", icon: PackageCheck },
   { id: "equipment", label: "Equipos", icon: PackageCheck },
   { id: "system", label: "Sistema SaaS", icon: ShieldCheck },
 ];
@@ -79,6 +80,48 @@ const emptyEquipment = {
   notes: "",
 };
 
+const emptyProduct = {
+  code: "",
+  name: "",
+  description: "",
+  unit_cost: "0",
+  unit_price: "0",
+  stock: "0",
+  min_stock: "0",
+  branch_id: "",
+  is_active: true,
+};
+
+const emptyProductSale = {
+  product_id: "",
+  member_id: "",
+  customer_name: "",
+  quantity: "1",
+  unit_price: "0",
+  payment_method: "cash",
+  payment_status: "paid",
+  sale_date: new Date().toISOString().slice(0, 10),
+  due_on: "",
+  proof_photo: null as File | null,
+  notes: "",
+};
+
+const emptyStockPurchase = {
+  quantity: "1",
+  unit_cost: "0",
+  purchased_on: new Date().toISOString().slice(0, 10),
+  notes: "",
+};
+
+const emptyCollectPayment = {
+  payment_id: "",
+  amount: "",
+  method: "cash",
+  paid_on: new Date().toISOString().slice(0, 10),
+  proof_photo: null as File | null,
+  notes: "",
+};
+
 const emptyClassForm = {
   name: "",
   category: "MMA",
@@ -120,6 +163,16 @@ const labels: Record<string, string> = {
   branch_name: "Sede",
   code: "Código",
   name: "Nombre",
+  description: "Descripción",
+  unit_cost: "Costo",
+  unit_price: "Precio venta",
+  stock: "Stock",
+  min_stock: "Stock mínimo",
+  product_code: "Código",
+  customer_name: "Cliente",
+  payer_name: "Cliente / pagador",
+  due_on: "Vence",
+  sale_date: "Fecha",
   price: "Precio",
   duration_days: "Duración",
   grace_days: "Gracia",
@@ -146,6 +199,12 @@ const labels: Record<string, string> = {
   day_schedules: "Horarios",
   preferred_time: "Hora",
   payment_method: "Pago",
+  payment_status: "Estado pago",
+  balance_due: "Saldo",
+  amount_paid: "Cobrado",
+  type: "Tipo",
+  total_amount: "Total",
+  product_name: "Producto",
   checked_in_at: "Entrada",
   checked_out_at: "Salida",
   result: "Resultado",
@@ -196,6 +255,16 @@ const cellTranslations: Record<string, Record<string, string>> = {
   movement_type: {
     income: "Ingreso",
     expense: "Gasto",
+    initial: "Stock inicial",
+    purchase: "Compra",
+    sale: "Venta",
+    adjustment_in: "Ajuste entrada",
+    adjustment_out: "Ajuste salida",
+  },
+  payment_status: {
+    paid: "Pagado",
+    credit: "Crédito",
+    courtesy: "Cortesía",
   },
   status: {
     active: "Activo",
@@ -203,6 +272,8 @@ const cellTranslations: Record<string, Record<string, string>> = {
     blocked: "Bloqueado",
     paid: "Pagado",
     pending: "Pendiente",
+    credit: "Crédito",
+    courtesy: "Cortesía",
     overdue: "Vencido",
     partial: "Parcial",
     annulled: "Anulado",
@@ -235,6 +306,10 @@ function formatCell(column: string, value: unknown) {
   if (column === "selected_days" && Array.isArray(value)) return value.join(", ");
   if (column === "day_schedules" && value && typeof value === "object") return Object.entries(value as Record<string, { start?: string; end?: string }>).map(([day, range]) => `${day}: ${range.start ?? "--:--"}-${range.end ?? "--:--"}`).join(", ");
   if (typeof value === "boolean" || value === 0 || value === 1) return Boolean(value) ? "Sí" : "No";
+  if (column === "type" || column === "payment_status") {
+    const map = column === "type" ? cellTranslations.movement_type : cellTranslations.payment_status;
+    if (map?.[String(value)]) return map[String(value)];
+  }
   if (cellTranslations[column]?.[String(value)]) return column === "status" ? <StatusBadge value={String(value)} /> : cellTranslations[column][String(value)];
   return String(value ?? "-");
 }
@@ -427,18 +502,28 @@ function weeklyClassStyle(gymClass: AnyRow, index: number) {
   };
 }
 
+function defaultBranchId(user: AnyRow | null | undefined, branches: AnyRow[]) {
+  if (user?.branch_id) return String(user.branch_id);
+  return branches[0]?.id ? String(branches[0].id) : "";
+}
+
 function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
   return [
     ...payments.map((payment) => ({
       id: `payment-${payment.id}`,
+      payment_id: payment.id,
       movement_type: "income",
-      concept: payment.notes?.startsWith("Ingreso externo") ? (payment.notes.replace("Ingreso externo: ", "") || payment.receipt_number) : (payment.receipt_number ?? "Pago recibido"),
-      member_name: payment.member_name ?? payment.payer_name ?? "-",
+      concept: payment.notes?.startsWith("Ingreso externo")
+        ? payment.notes.replace("Ingreso externo: ", "").split(" · ")[0]
+        : (payment.notes ?? payment.receipt_number ?? "Pago recibido"),
+      member_name: payment.payer_name ?? payment.member_name ?? payment.customer_name ?? "-",
       amount: Number(payment.amount ?? 0),
+      balance_due: Number(payment.balance_due ?? 0),
       method: payment.method,
-      movement_date: payment.paid_on,
+      movement_date: payment.paid_on ?? payment.due_on,
       proof_url: payment.proof_url,
       status: payment.status,
+      branch_name: payment.branch_name,
     })),
     ...expenses.map((expense) => ({
       id: `expense-${expense.id}`,
@@ -508,13 +593,23 @@ export function GymPage() {
   const [classes, setClasses] = useState<AnyRow[]>([]);
   const [trainingSubscriptions, setTrainingSubscriptions] = useState<AnyRow[]>([]);
   const [equipment, setEquipment] = useState<AnyRow[]>([]);
+  const [products, setProducts] = useState<AnyRow[]>([]);
+  const [productSales, setProductSales] = useState<AnyRow[]>([]);
+  const [productMovements, setProductMovements] = useState<AnyRow[]>([]);
+  const [productBranchFilter, setProductBranchFilter] = useState("");
+  const [financeBranchFilter, setFinanceBranchFilter] = useState("");
   const [notifications, setNotifications] = useState<AnyRow[]>([]);
   const [saas, setSaas] = useState<AnyRow>({ tenants: [], users: [], modules: [], roles: [], branches: [] });
   const [memberForm, setMemberForm] = useState<AnyRow>(emptyMember);
   const [planForm, setPlanForm] = useState<AnyRow>(emptyPlan);
   const [equipmentForm, setEquipmentForm] = useState<AnyRow>(emptyEquipment);
-  const [saleForm, setSaleForm] = useState<AnyRow>({ member_id: "", plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", proof_photo: null, notes: "" });
-  const [incomeForm, setIncomeForm] = useState<AnyRow>({ category: "Venta externa", concept: "", payer_name: "", amount: "", paid_on: new Date().toISOString().slice(0, 10), method: "cash", proof_photo: null, notes: "" });
+  const [productForm, setProductForm] = useState<AnyRow>(emptyProduct);
+  const [productSaleForm, setProductSaleForm] = useState<AnyRow>(emptyProductSale);
+  const [saleForm, setSaleForm] = useState<AnyRow>({ member_id: "", plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", status: "paid", due_on: "", proof_photo: null, notes: "" });
+  const [incomeForm, setIncomeForm] = useState<AnyRow>({ category: "Venta externa", concept: "", payer_name: "", branch_id: "", amount: "", paid_on: new Date().toISOString().slice(0, 10), due_on: "", method: "cash", status: "paid", proof_photo: null, notes: "" });
+  const [stockPurchaseForm, setStockPurchaseForm] = useState<AnyRow>(emptyStockPurchase);
+  const [collectPaymentForm, setCollectPaymentForm] = useState<AnyRow>(emptyCollectPayment);
+  const [selectedReceivable, setSelectedReceivable] = useState<AnyRow | null>(null);
   const [expenseForm, setExpenseForm] = useState<AnyRow>({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", proof_photo: null });
   const [classForm, setClassForm] = useState<AnyRow>(emptyClassForm);
   const [classModalOpen, setClassModalOpen] = useState(false);
@@ -543,6 +638,12 @@ export function GymPage() {
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [equipmentModalOpen, setEquipmentModalOpen] = useState(false);
   const [saleModalOpen, setSaleModalOpen] = useState(false);
+  const [productModalOpen, setProductModalOpen] = useState(false);
+  const [productSaleModalOpen, setProductSaleModalOpen] = useState(false);
+  const [productKardexModalOpen, setProductKardexModalOpen] = useState(false);
+  const [stockPurchaseModalOpen, setStockPurchaseModalOpen] = useState(false);
+  const [collectPaymentModalOpen, setCollectPaymentModalOpen] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<AnyRow | null>(null);
   const [memberMembershipModalOpen, setMemberMembershipModalOpen] = useState(false);
   const [selectedMember, setSelectedMember] = useState<AnyRow | null>(null);
   const [incomeModalOpen, setIncomeModalOpen] = useState(false);
@@ -572,19 +673,21 @@ export function GymPage() {
   }
 
   async function loadAll() {
-    const [dash, branchRes, goalRes, planRes, memberRes, membershipRes, paymentRes, expenseRes, attendanceRes, classRes, trainingRes, equipmentRes, notificationRes] = await Promise.all([
+    const [dash, branchRes, goalRes, planRes, memberRes, membershipRes, paymentRes, expenseRes, attendanceRes, classRes, trainingRes, equipmentRes, productRes, productSalesRes, notificationRes] = await Promise.all([
       httpClient.get("/api/gym/dashboard"),
       httpClient.get("/api/gym/branches"),
       httpClient.get("/api/gym/fitness-goals"),
       httpClient.get("/api/gym/plans"),
       httpClient.get("/api/gym/members", { params: { search: memberSearch, status: memberStatusFilter, branch_id: memberBranchFilter, page: membersPage, per_page: membersPerPage } }),
       httpClient.get("/api/gym/memberships"),
-      httpClient.get("/api/gym/payments"),
-      httpClient.get("/api/gym/expenses"),
+      httpClient.get("/api/gym/payments", { params: { branch_id: financeBranchFilter || undefined } }),
+      httpClient.get("/api/gym/expenses", { params: { branch_id: financeBranchFilter || undefined } }),
       httpClient.get("/api/gym/attendance"),
       httpClient.get("/api/gym/classes"),
       httpClient.get("/api/gym/training-subscriptions"),
       httpClient.get("/api/gym/equipment"),
+      httpClient.get("/api/gym/products", { params: { branch_id: productBranchFilter || undefined } }),
+      httpClient.get("/api/gym/product-sales", { params: { branch_id: productBranchFilter || undefined } }),
       httpClient.get("/api/gym/notifications"),
     ]);
     setDashboard(dash.data);
@@ -600,6 +703,8 @@ export function GymPage() {
     setClasses(classRes.data);
     setTrainingSubscriptions(trainingRes.data);
     setEquipment(equipmentRes.data);
+    setProducts(productRes.data);
+    setProductSales(productSalesRes.data);
     setNotifications(notificationRes.data);
     if (user?.is_superadmin) {
       const saasRes = await httpClient.get("/api/gym/saas");
@@ -609,7 +714,12 @@ export function GymPage() {
 
   useEffect(() => {
     void loadAll();
-  }, [membersPage, membersPerPage, memberStatusFilter, memberBranchFilter, memberSearch]);
+  }, [membersPage, membersPerPage, memberStatusFilter, memberBranchFilter, memberSearch, financeBranchFilter, productBranchFilter]);
+
+  useEffect(() => {
+    if (!financeBranchFilter && user?.branch_id) setFinanceBranchFilter(String(user.branch_id));
+    if (!productBranchFilter && user?.branch_id) setProductBranchFilter(String(user.branch_id));
+  }, [user?.branch_id]);
 
   useEffect(() => {
     if (!notifications.length || typeof Notification === "undefined" || Notification.permission !== "granted") return;
@@ -857,6 +967,149 @@ export function GymPage() {
     });
   }
 
+  function openNewProduct() {
+    setSelectedProduct(null);
+    setProductForm({ ...emptyProduct, branch_id: defaultBranchId(user, branches) });
+    setProductModalOpen(true);
+  }
+
+  function openEditProduct(product: AnyRow) {
+    setSelectedProduct(product);
+    setProductForm({
+      code: product.code ?? "",
+      name: product.name ?? "",
+      description: product.description ?? "",
+      unit_cost: String(product.unit_cost ?? "0"),
+      unit_price: String(product.unit_price ?? "0"),
+      stock: String(product.stock ?? "0"),
+      min_stock: String(product.min_stock ?? "0"),
+      branch_id: product.branch_id ? String(product.branch_id) : "",
+      is_active: Boolean(product.is_active),
+    });
+    setProductModalOpen(true);
+  }
+
+  async function saveProduct(event: FormEvent) {
+    event.preventDefault();
+    setMessage("");
+    const payload = {
+      ...productForm,
+      stock: Number(productForm.stock),
+      unit_cost: Number(productForm.unit_cost),
+      unit_price: Number(productForm.unit_price),
+      min_stock: productForm.min_stock === "" ? null : Number(productForm.min_stock),
+      branch_id: productForm.branch_id || null,
+      is_active: Boolean(productForm.is_active),
+    };
+
+    if (selectedProduct?.id) {
+      await httpClient.put(`/api/gym/products/${selectedProduct.id}`, payload);
+      setMessage("Producto actualizado correctamente.");
+    } else {
+      await httpClient.post("/api/gym/products", payload);
+      setMessage("Producto registrado correctamente.");
+    }
+
+    setProductModalOpen(false);
+    setSelectedProduct(null);
+    await loadAll();
+  }
+
+  function confirmDeleteProduct(item: AnyRow) {
+    setConfirm({
+      title: "Eliminar producto",
+      body: `¿Deseas eliminar o desactivar el producto "${item.name}"? Si tiene ventas o movimientos, se conservará y quedará inactivo.`,
+      onConfirm: async () => {
+        const response = await httpClient.delete(`/api/gym/products/${item.id}`);
+        setMessage(response.data?.message ?? "Producto eliminado correctamente.");
+        await loadAll();
+      },
+    });
+  }
+
+  function openSellProduct(product: AnyRow) {
+    setSelectedProduct(product);
+    setProductSaleForm({
+      ...emptyProductSale,
+      product_id: String(product.id),
+      unit_price: String(product.unit_price ?? "0"),
+      quantity: "1",
+      sale_date: new Date().toISOString().slice(0, 10),
+    });
+    setProductSaleModalOpen(true);
+  }
+
+  async function saveProductSale(event: FormEvent) {
+    event.preventDefault();
+    setMessage("");
+    const formData = new FormData();
+    for (const [key, value] of Object.entries(productSaleForm)) await appendFormValue(formData, key, value);
+    await httpClient.post("/api/gym/product-sales", formData);
+    setMessage("Venta de producto registrada correctamente.");
+    setProductSaleModalOpen(false);
+    setSelectedProduct(null);
+    await loadAll();
+  }
+
+  function openStockPurchase(product: AnyRow) {
+    setSelectedProduct(product);
+    setStockPurchaseForm({
+      ...emptyStockPurchase,
+      unit_cost: String(product.unit_cost ?? "0"),
+      purchased_on: new Date().toISOString().slice(0, 10),
+    });
+    setStockPurchaseModalOpen(true);
+  }
+
+  async function saveStockPurchase(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedProduct?.id) return;
+    setMessage("");
+    await httpClient.post(`/api/gym/products/${selectedProduct.id}/stock-purchase`, {
+      quantity: Number(stockPurchaseForm.quantity),
+      unit_cost: Number(stockPurchaseForm.unit_cost),
+      purchased_on: stockPurchaseForm.purchased_on,
+      notes: stockPurchaseForm.notes,
+    });
+    setStockPurchaseModalOpen(false);
+    setSelectedProduct(null);
+    setMessage("Ingreso de mercadería registrado.");
+    await loadAll();
+  }
+
+  function openCollectPayment(payment: AnyRow) {
+    setSelectedReceivable(payment);
+    setCollectPaymentForm({
+      ...emptyCollectPayment,
+      payment_id: String(payment.payment_id ?? payment.id),
+      amount: String(payment.balance_due ?? payment.amount ?? ""),
+      paid_on: new Date().toISOString().slice(0, 10),
+    });
+    setCollectPaymentModalOpen(true);
+  }
+
+  async function saveCollectPayment(event: FormEvent) {
+    event.preventDefault();
+    setMessage("");
+    const formData = new FormData();
+    for (const [key, value] of Object.entries(collectPaymentForm)) {
+      if (key === "payment_id") continue;
+      await appendFormValue(formData, key, value);
+    }
+    await httpClient.post(`/api/gym/payments/${collectPaymentForm.payment_id}/collect`, formData);
+    setCollectPaymentModalOpen(false);
+    setSelectedReceivable(null);
+    setMessage("Cobro registrado correctamente.");
+    await loadAll();
+  }
+
+  async function openProductKardex(product: AnyRow) {
+    setSelectedProduct(product);
+    const response = await httpClient.get("/api/gym/product-movements", { params: { product_id: product.id } });
+    setProductMovements(response.data);
+    setProductKardexModalOpen(true);
+  }
+
   async function sellMembership(event: FormEvent) {
     event.preventDefault();
     setMessage("");
@@ -895,7 +1148,7 @@ export function GymPage() {
     const formData = new FormData();
     for (const [key, value] of Object.entries(incomeForm)) await appendFormValue(formData, key, value);
     await httpClient.post("/api/gym/payments", formData);
-    setIncomeForm({ category: "Venta externa", concept: "", payer_name: "", amount: "", paid_on: new Date().toISOString().slice(0, 10), method: "cash", proof_photo: null, notes: "" });
+    setIncomeForm({ category: "Venta externa", concept: "", payer_name: "", branch_id: defaultBranchId(user, branches), amount: "", paid_on: new Date().toISOString().slice(0, 10), due_on: "", method: "cash", status: "paid", proof_photo: null, notes: "" });
     setIncomeModalOpen(false);
     setMessage("Ingreso externo registrado.");
     await loadAll();
@@ -1149,8 +1402,9 @@ export function GymPage() {
           {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} /></Module> : null}
           {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} /> : null}
+          {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); setProductSaleForm({ ...emptyProductSale, sale_date: new Date().toISOString().slice(0, 10) }); setProductSaleModalOpen(true); }} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos." onNew={openNewEquipment} newLabel="Nuevo equipo"><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} action={(row) => <ActionButtons onEdit={() => openEditEquipment(row)} onDelete={() => confirmDeleteEquipment(row)} />} /></Module> : null}
-          {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} onNewIncome={() => setIncomeModalOpen(true)} onNewExpense={() => setExpenseModalOpen(true)} /> : null}
+          {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} branches={branches} branchFilter={financeBranchFilter} onBranchFilterChange={setFinanceBranchFilter} onNewIncome={() => { setIncomeForm((current) => ({ ...current, branch_id: defaultBranchId(user, branches) })); setIncomeModalOpen(true); }} onNewExpense={() => setExpenseModalOpen(true)} onCollectPayment={openCollectPayment} /> : null}
           {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} /> : null}
         </section>
       </main>
@@ -1159,7 +1413,12 @@ export function GymPage() {
       <PlanModal open={planModalOpen} editing={Boolean(editingPlanId)} form={planForm} onChange={setPlanForm} onClose={() => setPlanModalOpen(false)} onSubmit={savePlan} />
       <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} onChange={setSaleForm} onClose={() => setSaleModalOpen(false)} onSubmit={sellMembership} />
       <MemberMembershipModal open={memberMembershipModalOpen} member={selectedMember} rows={memberMemberships} saleForm={saleForm} plans={plans} onSaleChange={setSaleForm} onClose={() => setMemberMembershipModalOpen(false)} onSubmit={sellMembership} />
-      <IncomeModal open={incomeModalOpen} form={incomeForm} onChange={setIncomeForm} onClose={() => setIncomeModalOpen(false)} onSubmit={saveExternalIncome} />
+      <IncomeModal open={incomeModalOpen} form={incomeForm} branches={branches} onChange={setIncomeForm} onClose={() => setIncomeModalOpen(false)} onSubmit={saveExternalIncome} />
+      <CollectPaymentModal open={collectPaymentModalOpen} payment={selectedReceivable} form={collectPaymentForm} onChange={setCollectPaymentForm} onClose={() => { setCollectPaymentModalOpen(false); setSelectedReceivable(null); }} onSubmit={saveCollectPayment} />
+      <StockPurchaseModal open={stockPurchaseModalOpen} product={selectedProduct} form={stockPurchaseForm} onChange={setStockPurchaseForm} onClose={() => { setStockPurchaseModalOpen(false); setSelectedProduct(null); }} onSubmit={saveStockPurchase} />
+      <ProductModal open={productModalOpen} editing={Boolean(selectedProduct)} form={productForm} branches={branches} onChange={setProductForm} onClose={() => { setProductModalOpen(false); setSelectedProduct(null); }} onSubmit={saveProduct} />
+      <ProductSaleModal open={productSaleModalOpen} form={productSaleForm} products={products} members={members} onChange={setProductSaleForm} onClose={() => { setProductSaleModalOpen(false); setSelectedProduct(null); }} onSubmit={saveProductSale} />
+      <ProductKardexModal open={productKardexModalOpen} rows={productMovements} onClose={() => setProductKardexModalOpen(false)} />
       <ExpenseModal open={expenseModalOpen} form={expenseForm} onChange={setExpenseForm} onClose={() => setExpenseModalOpen(false)} onSubmit={saveExpense} />
       <EquipmentModal open={equipmentModalOpen} editing={Boolean(editingEquipmentId)} form={equipmentForm} branches={branches} onChange={setEquipmentForm} onClose={() => { setEquipmentModalOpen(false); setEditingEquipmentId(null); }} onSubmit={saveEquipment} />
       <ClassModal open={classModalOpen} editing={Boolean(editingClassId)} form={classForm} branches={branches} onChange={setClassForm} onClose={() => setClassModalOpen(false)} onSubmit={saveClass} />
@@ -1318,19 +1577,53 @@ function Module({ title, subtitle, children, onNew, newLabel }: { title: string;
   );
 }
 
-function FinanceModule({ movements, payments, expenses, onNewIncome, onNewExpense }: { movements: AnyRow[]; payments: AnyRow[]; expenses: AnyRow[]; onNewIncome: () => void; onNewExpense: () => void }) {
-  const methods = ["cash", "yape", "plin", "transfer", "card"];
-  const incomeByMethod = methods.map((method) => ({
-    method,
-    amount: payments.filter((payment) => payment.status !== "annulled" && payment.method === method).reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0),
-  }));
-  const totalIncome = incomeByMethod.reduce((sum, item) => sum + item.amount, 0);
-  const totalExpenses = expenses.reduce((sum, expense) => sum + Number(expense.amount ?? 0), 0);
+function ProductsModule({ products, productSales, branches, branchFilter, onBranchFilterChange, onNewProduct, onSellProduct, onStockPurchase, onKardex, onEditProduct, onDeleteProduct, onNewSale }: { products: AnyRow[]; productSales: AnyRow[]; branches: AnyRow[]; branchFilter: string; onBranchFilterChange: (value: string) => void; onNewProduct: () => void; onSellProduct: (row: AnyRow) => void; onStockPurchase: (row: AnyRow) => void; onKardex: (row: AnyRow) => void; onEditProduct: (row: AnyRow) => void; onDeleteProduct: (row: AnyRow) => void; onNewSale: () => void }) {
+  const lowStock = products.filter((product) => product.is_active && product.min_stock != null && Number(product.stock) <= Number(product.min_stock));
+  const inventoryValue = products.reduce((sum, product) => sum + Number(product.stock ?? 0) * Number(product.unit_cost ?? 0), 0);
+  const salesTotal = productSales.reduce((sum, sale) => sum + Number(sale.total_amount ?? 0), 0);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 rounded-3xl bg-zinc-950 p-4 text-white shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-5">
-        <div><p className="text-xs font-black uppercase tracking-[0.24em] text-[#ffcc00]">Administración</p><h2 className="text-2xl font-black">Caja</h2><p className="mt-1 text-sm text-zinc-400">Movimientos completos de ingresos, gastos, efectivo, cuentas, Yape y Plin.</p></div>
+        <div><p className="text-xs font-black uppercase tracking-[0.24em] text-[#ffcc00]">Inventario</p><h2 className="text-2xl font-black">Productos y almacén</h2><p className="mt-1 text-sm text-zinc-400">Stock por sede, ventas, compras y kardex en tiempo real.</p></div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button onClick={onNewSale} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-black text-zinc-950"><Plus className="h-4 w-4" />Venta rápida</button>
+          <button onClick={onNewProduct} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#ffcc00] px-4 py-3 text-sm font-black text-zinc-950 shadow-lg shadow-yellow-500/20"><Plus className="h-4 w-4" />Nuevo producto</button>
+        </div>
+      </div>
+      <div className="grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Filtrar por sede</span><select value={branchFilter} onChange={(event) => onBranchFilterChange(event.target.value)} className={fieldClass()}><option value="">Todas mis sedes</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard title="Productos activos" value={products.filter((item) => item.is_active).length} yellow />
+        <MetricCard title="Stock bajo" value={lowStock.length} />
+        <MetricCard title="Valor inventario" value={money(inventoryValue)} dark />
+        <MetricCard title="Ventas registradas" value={money(salesTotal)} />
+      </div>
+      {lowStock.length ? <div className="rounded-3xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">Hay {lowStock.length} producto(s) en stock mínimo: {lowStock.slice(0, 4).map((item) => item.name).join(", ")}{lowStock.length > 4 ? "..." : ""}</div> : null}
+      <DataTable title="Catálogo de productos" rows={products} columns={["code", "name", "stock", "unit_price", "min_stock", "branch_name", "is_active"]} action={(row) => <ActionButtons onEdit={() => onEditProduct(row)} onDelete={() => onDeleteProduct(row)} extra={<><button type="button" onClick={() => onSellProduct(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Vender</button><button type="button" onClick={() => onStockPurchase(row)} className="rounded-xl bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700">Compra</button><button type="button" onClick={() => onKardex(row)} className="rounded-xl bg-white px-3 py-2 text-xs font-black text-zinc-700 ring-1 ring-zinc-200">Kardex</button></>} />} />
+      <DataTable title="Últimas ventas de productos" rows={productSales} columns={["product_name", "member_name", "customer_name", "quantity", "total_amount", "payment_method", "payment_status", "sale_date", "branch_name"]} />
+    </div>
+  );
+}
+
+function FinanceModule({ movements, payments, expenses, branches, branchFilter, onBranchFilterChange, onNewIncome, onNewExpense, onCollectPayment }: { movements: AnyRow[]; payments: AnyRow[]; expenses: AnyRow[]; branches: AnyRow[]; branchFilter: string; onBranchFilterChange: (value: string) => void; onNewIncome: () => void; onNewExpense: () => void; onCollectPayment: (payment: AnyRow) => void }) {
+  const methods = ["cash", "yape", "plin", "transfer", "card"];
+  const confirmedPayments = payments.filter((payment) => payment.status === "paid");
+  const incomeByMethod = methods.map((method) => ({
+    method,
+    amount: confirmedPayments.filter((payment) => payment.method === method).reduce((sum, payment) => sum + Number(payment.amount_paid ?? payment.amount ?? 0), 0),
+  }));
+  const totalIncome = incomeByMethod.reduce((sum, item) => sum + item.amount, 0);
+  const totalExpenses = expenses.reduce((sum, expense) => sum + Number(expense.amount ?? 0), 0);
+  const receivables = payments.filter((payment) => ["pending", "credit", "partial"].includes(String(payment.status)));
+  const accountsReceivable = receivables.reduce((sum, payment) => sum + Number(payment.balance_due ?? payment.amount ?? 0), 0);
+  const courtesyAmount = payments.filter((payment) => payment.status === "courtesy").reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 rounded-3xl bg-zinc-950 p-4 text-white shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-5">
+        <div><p className="text-xs font-black uppercase tracking-[0.24em] text-[#ffcc00]">Administración</p><h2 className="text-2xl font-black">Caja</h2><p className="mt-1 text-sm text-zinc-400">Ingresos, gastos, créditos, cortesías y cobros por sede.</p></div>
         <div className="flex flex-col gap-2 sm:flex-row">
           <button onClick={onNewIncome} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#ffcc00] px-4 py-3 text-sm font-black text-zinc-950 shadow-lg shadow-yellow-500/20"><Plus className="h-4 w-4" />Registrar ingreso</button>
           <button onClick={onNewExpense} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-black text-zinc-950"><Plus className="h-4 w-4" />Registrar gasto</button>
@@ -1339,13 +1632,17 @@ function FinanceModule({ movements, payments, expenses, onNewIncome, onNewExpens
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard title="Total recaudado" value={money(totalIncome)} yellow />
         <MetricCard title="Gastos registrados" value={money(totalExpenses)} />
-        <MetricCard title="Balance estimado" value={money(totalIncome - totalExpenses)} dark />
-        <MetricCard title="Movimientos" value={movements.length} />
+        <MetricCard title="Cuentas por cobrar" value={money(accountsReceivable)} />
+        <MetricCard title="Cortesías" value={money(courtesyAmount)} />
+      </div>
+      <div className="grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Filtrar por sede</span><select value={branchFilter} onChange={(event) => onBranchFilterChange(event.target.value)} className={fieldClass()}><option value="">Todas mis sedes</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {incomeByMethod.map((item) => <MetricCard key={item.method} title={cellTranslations.method[item.method]} value={money(item.amount)} />)}
       </div>
-      <DataTable title="Movimientos de caja" rows={movements} columns={["movement_type", "concept", "member_name", "amount", "method", "movement_date", "proof_url", "status"]} />
+      <DataTable title="Cuentas por cobrar" rows={receivables} columns={["receipt_number", "payer_name", "amount", "amount_paid", "balance_due", "due_on", "status", "branch_name"]} action={(row) => Number(row.balance_due ?? 0) > 0 ? <button type="button" onClick={() => onCollectPayment(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Cobrar</button> : null} />
+      <DataTable title="Movimientos de caja" rows={movements} columns={["movement_type", "concept", "member_name", "amount", "balance_due", "method", "movement_date", "status", "branch_name"]} action={(row) => ["pending", "credit", "partial"].includes(String(row.status)) && Number(row.balance_due ?? 0) > 0 ? <button type="button" onClick={() => onCollectPayment(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Cobrar</button> : null} />
     </div>
   );
 }
@@ -1554,7 +1851,7 @@ function PlanModal({ open, editing, form, onChange, onClose, onSubmit }: { open:
 }
 
 function SaleModal({ open, form, members, plans, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; plans: AnyRow[]; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-  return <Modal open={open} title="Nueva venta" subtitle="Activa una membresía y registra el pago." onClose={onClose}><form onSubmit={onSubmit} className="space-y-3"><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><select required value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione socio</option>{members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}</select></label><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Plan</RequiredLabel><select required value={form.plan_id} onChange={(event) => onChange({ ...form, plan_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione plan</option>{plans.filter((plan) => plan.is_active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {money(plan.price)}</option>)}</select></label><div className="grid gap-3 sm:grid-cols-2"><Field label="Fecha de inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required /><Field label="Descuento" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} /></div><PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} /><FormActions onClose={onClose} submitLabel="Cobrar y activar" /></form></Modal>;
+  return <Modal open={open} title="Nueva venta" subtitle="Activa una membresía y registra el pago." onClose={onClose}><form onSubmit={onSubmit} className="space-y-3"><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><select required value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione socio</option>{members.map((member) => <option key={member.id} value={member.id}>{member.member_code} · {member.first_name} {member.last_name}</option>)}</select></label><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Plan</RequiredLabel><select required value={form.plan_id} onChange={(event) => onChange({ ...form, plan_id: event.target.value })} className={fieldClass("w-full")}><option value="">Seleccione plan</option>{plans.filter((plan) => plan.is_active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {money(plan.price)}</option>)}</select></label><div className="grid gap-3 sm:grid-cols-2"><Field label="Fecha de inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required /><Field label="Descuento" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} /></div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<select value={form.status ?? "paid"} onChange={(event) => onChange({ ...form, status: event.target.value })} className={fieldClass("w-full")}><option value="paid">Pagado</option><option value="credit">Crédito</option><option value="pending">Pendiente</option><option value="courtesy">Cortesía</option></select></label>{form.status === "credit" ? <Field label="Vence el" type="date" value={form.due_on ?? ""} onChange={(value) => onChange({ ...form, due_on: value })} /> : null}<PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} /><FormActions onClose={onClose} submitLabel="Cobrar y activar" /></form></Modal>;
 }
 
 function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChange, onClose, onSubmit }: { open: boolean; member: AnyRow | null; rows: AnyRow[]; saleForm: AnyRow; plans: AnyRow[]; onSaleChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
@@ -1576,6 +1873,8 @@ function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChan
               <Field label="Fecha de inicio" type="date" value={saleForm.starts_on} onChange={(value) => onSaleChange({ ...saleForm, starts_on: value })} required />
               <Field label="Descuento" value={saleForm.discount} onChange={(value) => onSaleChange({ ...saleForm, discount: value })} />
             </div>
+            <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<select value={saleForm.status ?? "paid"} onChange={(event) => onSaleChange({ ...saleForm, status: event.target.value })} className={fieldClass("w-full")}><option value="paid">Pagado</option><option value="credit">Crédito</option><option value="pending">Pendiente</option><option value="courtesy">Cortesía</option></select></label>
+            {saleForm.status === "credit" ? <Field label="Vence el" type="date" value={saleForm.due_on ?? ""} onChange={(value) => onSaleChange({ ...saleForm, due_on: value })} /> : null}
             <PaymentFields method={saleForm.method ?? "cash"} file={saleForm.proof_photo} onMethodChange={(value) => onSaleChange({ ...saleForm, method: value, proof_photo: value === "cash" ? null : saleForm.proof_photo })} onFileChange={(file) => onSaleChange({ ...saleForm, proof_photo: file })} />
           </div>
           <FormActions onClose={onClose} submitLabel="Activar membresía" />
@@ -1585,9 +1884,9 @@ function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChan
   );
 }
 
-function IncomeModal({ open, form, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+function IncomeModal({ open, form, branches, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; branches: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
   return (
-    <Modal open={open} title="Registrar ingreso externo" subtitle="Suma dinero a caja aunque no provenga de membresías o mensualidades." onClose={onClose}>
+    <Modal open={open} title="Registrar ingreso externo" subtitle={`Suma dinero a caja · ${branches.length} sede(s) disponibles`} onClose={onClose}>
       <form onSubmit={onSubmit} className="grid gap-3">
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           <RequiredLabel>Categoría</RequiredLabel>
@@ -1601,6 +1900,15 @@ function IncomeModal({ open, form, onChange, onClose, onSubmit }: { open: boolea
           <Field label="Monto" type="number" value={form.amount} onChange={(value) => onChange({ ...form, amount: value })} required />
           <Field label="Fecha" type="date" value={form.paid_on} onChange={(value) => onChange({ ...form, paid_on: value })} required />
         </div>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          Estado
+          <select value={form.status ?? "paid"} onChange={(event) => onChange({ ...form, status: event.target.value })} className={fieldClass("w-full")}>
+            <option value="paid">Pagado</option>
+            <option value="pending">Pendiente</option>
+            <option value="credit">Crédito</option>
+            <option value="courtesy">Cortesía</option>
+          </select>
+        </label>
         <PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
         <FormActions onClose={onClose} submitLabel="Guardar ingreso" />
@@ -1628,6 +1936,106 @@ function ExpenseModal({ open, form, onChange, onClose, onSubmit }: { open: boole
         <PaymentFields method={form.payment_method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, payment_method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <FormActions onClose={onClose} submitLabel="Guardar gasto" />
       </form>
+    </Modal>
+  );
+}
+
+function ProductModal({ open, editing, form, branches, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return (
+    <Modal open={open} title={editing ? "Editar producto" : "Nuevo producto"} subtitle="Administra inventario y precios por sede." onClose={onClose}>
+      <form onSubmit={onSubmit} className="grid gap-3">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Código" value={form.code} onChange={(value) => onChange({ ...form, code: value })} required />
+          <Field label="Nombre" value={form.name} onChange={(value) => onChange({ ...form, name: value })} required />
+          <Field label="Costo unitario" type="number" value={form.unit_cost} onChange={(value) => onChange({ ...form, unit_cost: value })} required />
+          <Field label="Precio unitario" type="number" value={form.unit_price} onChange={(value) => onChange({ ...form, unit_price: value })} required />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Stock" type="number" value={form.stock} onChange={(value) => onChange({ ...form, stock: value })} required />
+          <Field label="Stock mínimo" type="number" value={form.min_stock} onChange={(value) => onChange({ ...form, min_stock: value })} />
+        </div>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          Sede
+          <select value={form.branch_id ?? ""} onChange={(event) => onChange({ ...form, branch_id: event.target.value })} className={fieldClass("w-full")}>
+            <option value="">Sin sede específica</option>
+            {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 rounded-2xl bg-zinc-50 p-4 text-sm font-bold"><input type="checkbox" checked={form.is_active} onChange={(event) => onChange({ ...form, is_active: event.target.checked })} /> Activar producto</label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Descripción<textarea value={form.description ?? ""} onChange={(event) => onChange({ ...form, description: event.target.value })} className={fieldClass("min-h-24")} /></label>
+        <FormActions onClose={onClose} submitLabel={editing ? "Actualizar producto" : "Registrar producto"} />
+      </form>
+    </Modal>
+  );
+}
+
+function ProductSaleModal({ open, form, products, members, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; products: AnyRow[]; members: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return (
+    <Modal open={open} title="Vender producto" subtitle="Registra la venta de un producto y actualiza stock." onClose={onClose}>
+      <form onSubmit={onSubmit} className="grid gap-3">
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          Producto
+          <select required value={form.product_id} onChange={(event) => onChange({ ...form, product_id: event.target.value })} className={fieldClass("w-full")}>
+            <option value="">Seleccione producto</option>
+            {products.map((product) => <option key={product.id} value={product.id}>{product.name} · {money(product.unit_price)}</option>)}
+          </select>
+        </label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          Socio
+          <select value={form.member_id} onChange={(event) => onChange({ ...form, member_id: event.target.value })} className={fieldClass("w-full")}>
+            <option value="">Consumidor final</option>
+            {members.map((member) => <option key={member.id} value={member.id}>{member.first_name} {member.last_name}</option>)}
+          </select>
+        </label>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Cantidad" type="number" value={form.quantity} onChange={(value) => onChange({ ...form, quantity: value })} required />
+          <Field label="Precio unitario" type="number" value={form.unit_price} onChange={(value) => onChange({ ...form, unit_price: value })} required />
+        </div>
+        <Field label="Fecha" type="date" value={form.sale_date} onChange={(value) => onChange({ ...form, sale_date: value })} required />
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<select value={form.payment_status ?? "paid"} onChange={(event) => onChange({ ...form, payment_status: event.target.value })} className={fieldClass("w-full")}><option value="paid">Pagado</option><option value="credit">Crédito</option><option value="courtesy">Cortesía</option></select></label>
+        {form.payment_status === "credit" ? <Field label="Vence el" type="date" value={form.due_on ?? ""} onChange={(value) => onChange({ ...form, due_on: value })} /> : null}
+        <PaymentFields method={form.payment_method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, payment_method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <Field label="Notas" value={form.notes ?? ""} onChange={(value) => onChange({ ...form, notes: value })} />
+        <FormActions onClose={onClose} submitLabel="Registrar venta" />
+      </form>
+    </Modal>
+  );
+}
+
+function CollectPaymentModal({ open, payment, form, onChange, onClose, onSubmit }: { open: boolean; payment: AnyRow | null; form: AnyRow; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return (
+    <Modal open={open} title="Registrar cobro" subtitle={payment ? `${payment.receipt_number ?? "Pago"} · Saldo ${money(payment.balance_due ?? payment.amount)}` : "Cobro de cuenta pendiente"} onClose={onClose}>
+      <form onSubmit={onSubmit} className="grid gap-3">
+        <Field label="Monto a cobrar" type="number" value={form.amount} onChange={(value) => onChange({ ...form, amount: value })} required />
+        <Field label="Fecha de cobro" type="date" value={form.paid_on} onChange={(value) => onChange({ ...form, paid_on: value })} required />
+        <PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <Field label="Notas" value={form.notes ?? ""} onChange={(value) => onChange({ ...form, notes: value })} />
+        <FormActions onClose={onClose} submitLabel="Confirmar cobro" />
+      </form>
+    </Modal>
+  );
+}
+
+function StockPurchaseModal({ open, product, form, onChange, onClose, onSubmit }: { open: boolean; product: AnyRow | null; form: AnyRow; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return (
+    <Modal open={open} title="Ingreso de mercadería" subtitle={product ? `Compra de stock para ${product.name}` : "Registrar compra"} onClose={onClose}>
+      <form onSubmit={onSubmit} className="grid gap-3">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Cantidad" type="number" value={form.quantity} onChange={(value) => onChange({ ...form, quantity: value })} required />
+          <Field label="Costo unitario" type="number" value={form.unit_cost} onChange={(value) => onChange({ ...form, unit_cost: value })} required />
+        </div>
+        <Field label="Fecha" type="date" value={form.purchased_on} onChange={(value) => onChange({ ...form, purchased_on: value })} />
+        <Field label="Notas" value={form.notes ?? ""} onChange={(value) => onChange({ ...form, notes: value })} />
+        <FormActions onClose={onClose} submitLabel="Registrar ingreso" />
+      </form>
+    </Modal>
+  );
+}
+
+function ProductKardexModal({ open, rows, onClose }: { open: boolean; rows: AnyRow[]; onClose: () => void }) {
+  return (
+    <Modal open={open} title="Kardex de producto" subtitle="Historial de movimientos de inventario por producto." onClose={onClose}>
+      <DataTable title="Movimientos" rows={rows} columns={["movement_type", "concept", "quantity", "unit_price", "branch_name", "created_at"]} />
     </Modal>
   );
 }

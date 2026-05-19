@@ -32,6 +32,7 @@ Route::middleware('auth')->group(function (): void {
         Route::get('memberships', [GymController::class, 'memberships']);
         Route::post('memberships', [GymController::class, 'sellMembership']);
         Route::match(['get', 'post'], 'payments', [GymController::class, 'payments']);
+        Route::post('payments/{payment}/collect', [GymController::class, 'collectPayment']);
         Route::get('attendance', [GymController::class, 'attendance']);
         Route::post('attendance/check-in', [GymController::class, 'checkIn']);
         Route::get('classes', [GymController::class, 'classes']);
@@ -50,6 +51,14 @@ Route::middleware('auth')->group(function (): void {
         Route::post('equipment', [GymController::class, 'storeEquipment']);
         Route::put('equipment/{equipment}', [GymController::class, 'updateEquipment']);
         Route::delete('equipment/{equipment}', [GymController::class, 'destroyEquipment']);
+        Route::get('products', [GymController::class, 'products']);
+        Route::post('products', [GymController::class, 'storeProduct']);
+        Route::put('products/{product}', [GymController::class, 'updateProduct']);
+        Route::delete('products/{product}', [GymController::class, 'destroyProduct']);
+        Route::get('product-sales', [GymController::class, 'productSales']);
+        Route::post('product-sales', [GymController::class, 'sellProduct']);
+        Route::get('product-movements', [GymController::class, 'productMovements']);
+        Route::post('products/{product}/stock-purchase', [GymController::class, 'purchaseProductStock']);
         Route::match(['get', 'post'], 'expenses', [GymController::class, 'expenses']);
         Route::get('notifications', [GymController::class, 'notifications']);
         Route::post('notifications/read', [GymController::class, 'markNotificationsRead']);

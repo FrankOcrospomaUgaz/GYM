@@ -24,6 +24,7 @@ class GymController extends Controller
         'classes' => 'Clases',
         'finance' => 'Caja',
         'equipment' => 'Equipos',
+        'products' => 'Productos',
     ];
 
     private function isSystemAdmin(?User $user): bool
@@ -58,21 +59,36 @@ class GymController extends Controller
         return $query;
     }
 
-    private function scopeBranches($query, Request $request, string $table): void
+    private function userBranchIds(Request $request): array
+    {
+        $user = $request->user();
+        $branchIds = DB::table('gym_branch_user')->where('user_id', $user?->id)->pluck('branch_id')->all();
+        if ($user?->branch_id) {
+            $branchIds[] = (int) $user->branch_id;
+        }
+
+        return array_values(array_unique($branchIds));
+    }
+
+    private function scopeBranches($query, Request $request, string $table, ?string $branchColumn = null): void
     {
         $user = $request->user();
         if ($this->isSystemAdmin($user)) {
             return;
         }
 
-        $branchIds = DB::table('gym_branch_user')->where('user_id', $user?->id)->pluck('branch_id')->all();
-        if ($user?->branch_id) {
-            $branchIds[] = (int) $user->branch_id;
+        $branchIds = $this->userBranchIds($request);
+        if ($user?->role?->slug === 'admin') {
+            return;
         }
 
-        if ($branchIds !== [] && $user?->role?->slug !== 'admin') {
-            $query->whereIn($table.'.branch_id', array_values(array_unique($branchIds)));
+        if ($branchIds === []) {
+            $query->whereRaw('1 = 0');
+            return;
         }
+
+        $column = $branchColumn ?? $table.'.branch_id';
+        $query->whereIn($column, $branchIds);
     }
 
     private function branchIdForWrite(Request $request, mixed $branchId): ?int
@@ -125,19 +141,37 @@ class GymController extends Controller
 
         $payments = $this->scopeTenant(DB::table('gym_payments'), $request, 'gym_payments');
         $expensesQuery = $this->scopeTenant(DB::table('gym_expenses'), $request, 'gym_expenses');
-        $membershipsQuery = $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships');
+        $membershipsQuery = $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
+            ->join('gym_members', 'gym_members.id', '=', 'gym_memberships.member_id');
         $membersQuery = $this->scopeTenant(DB::table('gym_members'), $request, 'gym_members');
         $attendanceQuery = $this->scopeTenant(DB::table('gym_attendances'), $request, 'gym_attendances');
         $notificationsQuery = $this->scopeTenant(DB::table('gym_notifications'), $request, 'gym_notifications');
 
-        $income = (float) $payments
+        $this->scopeBranches($payments, $request, 'gym_payments');
+        $this->scopeBranches($expensesQuery, $request, 'gym_expenses');
+        $this->scopeBranches($membershipsQuery, $request, 'gym_memberships', 'gym_members.branch_id');
+        $this->scopeBranches($membersQuery, $request, 'gym_members');
+        $this->scopeBranches($attendanceQuery, $request, 'gym_attendances');
+
+        $income = (float) (clone $payments)
             ->where('status', 'paid')
             ->whereBetween('paid_on', [$monthStart->toDateString(), $monthEnd->toDateString()])
             ->sum('amount');
 
+        $accountsReceivable = (float) (clone $payments)
+            ->whereIn('status', ['pending', 'credit', 'partial'])
+            ->selectRaw('COALESCE(SUM(amount - COALESCE(amount_paid, 0)), 0) as total')
+            ->value('total');
+
         $expenses = (float) $expensesQuery
             ->whereBetween('spent_on', [$monthStart->toDateString(), $monthEnd->toDateString()])
             ->sum('amount');
+
+        $lowStockProducts = $this->scopeTenant(DB::table('gym_products'), $request, 'gym_products')
+            ->where('is_active', true)
+            ->whereNotNull('min_stock')
+            ->whereColumn('stock', '<=', 'min_stock');
+        $this->scopeBranches($lowStockProducts, $request, 'gym_products');
 
         $expiring = $membershipsQuery
             ->where('status', 'active')
@@ -150,7 +184,10 @@ class GymController extends Controller
                 ['label' => 'Ingresos del mes', 'value' => 'S/ '.number_format($income, 2), 'hint' => 'Pagos confirmados'],
                 ['label' => 'Utilidad estimada', 'value' => 'S/ '.number_format($income - $expenses, 2), 'hint' => 'Ingresos menos gastos'],
                 ['label' => 'Por vencer', 'value' => $expiring, 'hint' => 'Membresías próximos 7 días'],
+                ['label' => 'Por cobrar', 'value' => 'S/ '.number_format($accountsReceivable, 2), 'hint' => 'Créditos y pendientes'],
+                ['label' => 'Stock bajo', 'value' => $lowStockProducts->count(), 'hint' => 'Productos en mínimo'],
             ],
+            'accounts_receivable' => $accountsReceivable,
             'attendance_today' => $attendanceQuery->whereDate('checked_in_at', $today->toDateString())->count(),
             'plan_mix' => $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
                 ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
@@ -513,6 +550,8 @@ class GymController extends Controller
             'starts_on' => ['required', 'date'],
             'discount' => ['nullable', 'numeric', 'min:0'],
             'method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+            'status' => ['required', Rule::in(['paid', 'pending', 'credit', 'courtesy'])],
+            'due_on' => ['nullable', 'date'],
             'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
             'notes' => ['nullable', 'string'],
         ]);
@@ -525,11 +564,14 @@ class GymController extends Controller
         $discount = (float) ($data['discount'] ?? 0);
         $amount = max(0, (float) $plan->price - $discount);
 
-        $proofPath = $data['method'] !== 'cash' && $request->hasFile('proof_photo')
+        $paymentStatus = (string) $data['status'];
+        $proofPath = $paymentStatus === 'paid' && $data['method'] !== 'cash' && $request->hasFile('proof_photo')
             ? $request->file('proof_photo')?->store('payment-proofs', 'public')
             : null;
+        $branchId = $this->branchIdForWrite($request, $this->memberBranchId((int) $data['member_id']));
+        $amountPaid = in_array($paymentStatus, ['paid', 'courtesy'], true) ? $amount : 0;
 
-        return DB::transaction(function () use ($request, $data, $plan, $tenantId, $starts, $discount, $amount, $proofPath): JsonResponse {
+        return DB::transaction(function () use ($request, $data, $plan, $tenantId, $starts, $discount, $amount, $proofPath, $paymentStatus, $branchId, $amountPaid): JsonResponse {
             DB::table('gym_memberships')->where('member_id', $data['member_id'])->where('status', 'active')->update(['status' => 'replaced', 'updated_at' => now()]);
             $membershipId = DB::table('gym_memberships')->insertGetId([
                 'tenant_id' => $tenantId,
@@ -547,15 +589,18 @@ class GymController extends Controller
             ]);
             $paymentId = DB::table('gym_payments')->insertGetId([
                 'tenant_id' => $tenantId,
+                'branch_id' => $branchId,
                 'member_id' => $data['member_id'],
                 'membership_id' => $membershipId,
                 'receipt_number' => $this->nextPaymentReceiptNumber(),
                 'amount' => $amount,
+                'amount_paid' => $amountPaid,
                 'method' => $data['method'],
                 'proof_path' => $proofPath,
-                'status' => 'paid',
-                'paid_on' => now()->toDateString(),
-                'notes' => 'Venta de membresía',
+                'status' => $paymentStatus,
+                'paid_on' => $starts->toDateString(),
+                'due_on' => $paymentStatus === 'credit' ? ($data['due_on'] ?? $starts->copy()->addDays(7)->toDateString()) : null,
+                'notes' => 'Venta de membresía'.($data['notes'] ? ' · '.$data['notes'] : ''),
                 'registered_by' => $request->user()?->id,
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -567,23 +612,29 @@ class GymController extends Controller
 
     public function memberships(Request $request): JsonResponse
     {
-        return response()->json($this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
+        $query = $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
             ->join('gym_members', 'gym_members.id', '=', 'gym_memberships.member_id')
             ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
             ->select('gym_memberships.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_plans.name as plan_name')
-            ->orderByDesc('gym_memberships.id')
-            ->limit(100)
-            ->get());
+            ->orderByDesc('gym_memberships.id');
+
+        $this->scopeBranches($query, $request, 'gym_memberships', 'gym_members.branch_id');
+
+        return response()->json($query->limit(100)->get());
     }
 
     public function memberMemberships(Request $request, int $member): JsonResponse
     {
-        return response()->json($this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
+        $query = $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
+            ->join('gym_members', 'gym_members.id', '=', 'gym_memberships.member_id')
             ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
             ->select('gym_memberships.*', 'gym_plans.name as plan_name')
             ->where('gym_memberships.member_id', $member)
-            ->orderByDesc('gym_memberships.id')
-            ->get());
+            ->orderByDesc('gym_memberships.id');
+
+        $this->scopeBranches($query, $request, 'gym_memberships', 'gym_members.branch_id');
+
+        return response()->json($query->get());
     }
 
     public function payments(Request $request): JsonResponse
@@ -593,26 +644,41 @@ class GymController extends Controller
                 'category' => ['required', 'string', 'max:80'],
                 'concept' => ['required', 'string', 'max:160'],
                 'payer_name' => ['nullable', 'string', 'max:160'],
-                'amount' => ['required', 'numeric', 'min:0.01'],
+                'member_id' => ['nullable', 'exists:gym_members,id'],
+                'branch_id' => ['nullable', 'exists:gym_branches,id'],
+                'amount' => ['required', 'numeric', 'min:0'],
                 'paid_on' => ['required', 'date'],
+                'due_on' => ['nullable', 'date'],
                 'method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+                'status' => ['required', Rule::in(['paid', 'pending', 'credit', 'courtesy', 'annulled'])],
                 'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
                 'notes' => ['nullable', 'string'],
             ]);
 
-            $proofPath = $data['method'] !== 'cash' && $request->hasFile('proof_photo')
+            $paymentStatus = (string) $data['status'];
+            $proofPath = $paymentStatus === 'paid' && $data['method'] !== 'cash' && $request->hasFile('proof_photo')
                 ? $request->file('proof_photo')?->store('payment-proofs', 'public')
                 : null;
 
+            $tenantId = $this->defaultTenantId($request);
+            $memberBranchId = $data['member_id'] ? $this->memberBranchId((int) $data['member_id']) : null;
+            $branchId = $this->branchIdForWrite($request, $data['branch_id'] ?? $memberBranchId);
+            $amount = (float) $data['amount'];
+            $amountPaid = in_array($paymentStatus, ['paid', 'courtesy'], true) ? $amount : 0;
+
             DB::table('gym_payments')->insert([
-                'tenant_id' => $this->defaultTenantId($request),
-                'member_id' => null,
+                'tenant_id' => $tenantId,
+                'branch_id' => $branchId,
+                'member_id' => $data['member_id'] ?? null,
                 'receipt_number' => $this->nextPaymentReceiptNumber(),
-                'amount' => $data['amount'],
+                'amount' => $amount,
+                'amount_paid' => $amountPaid,
                 'method' => $data['method'],
-                'proof_path' => $proofPath,
-                'status' => 'paid',
+                'status' => $paymentStatus,
                 'paid_on' => Carbon::parse($data['paid_on'])->toDateString(),
+                'due_on' => in_array($paymentStatus, ['credit', 'pending'], true) ? ($data['due_on'] ?? Carbon::parse($data['paid_on'])->addDays(7)->toDateString()) : null,
+                'customer_name' => $data['payer_name'] ?? null,
+                'proof_path' => $proofPath,
                 'notes' => 'Ingreso externo: '.$data['concept'].($data['payer_name'] ? ' · '.$data['payer_name'] : '').' · '.$data['category'].($data['notes'] ? ' · '.$data['notes'] : ''),
                 'registered_by' => $request->user()?->id,
                 'created_at' => now(),
@@ -620,17 +686,434 @@ class GymController extends Controller
             ]);
         }
 
-        return response()->json($this->scopeTenant(DB::table('gym_payments'), $request, 'gym_payments')
+        $query = $this->scopeTenant(DB::table('gym_payments'), $request, 'gym_payments')
             ->leftJoin('gym_members', 'gym_members.id', '=', 'gym_payments.member_id')
-            ->select('gym_payments.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"))
-            ->orderByDesc('gym_payments.id')
-            ->limit(100)
-            ->get()
-            ->map(function ($payment) {
-                $payment->proof_url = $payment->proof_path ? Storage::disk('public')->url($payment->proof_path) : null;
+            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_payments.branch_id')
+            ->select('gym_payments.*', DB::raw("COALESCE(gym_payments.customer_name, CONCAT(gym_members.first_name, ' ', gym_members.last_name)) as payer_display"), DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_branches.name as branch_name')
+            ->orderByDesc('gym_payments.id');
 
-                return $payment;
-            }));
+        $this->scopeBranches($query, $request, 'gym_payments');
+
+        if ($request->filled('branch_id')) {
+            $query->where('gym_payments.branch_id', (int) $request->query('branch_id'));
+        }
+
+        if ($request->boolean('receivable_only')) {
+            $query->whereIn('gym_payments.status', ['pending', 'credit', 'partial']);
+        }
+
+        return response()->json($query->limit(150)->get()->map(function ($payment) {
+            return $this->enrichPayment($payment);
+        }));
+    }
+
+    public function collectPayment(Request $request, int $payment): JsonResponse
+    {
+        $data = $request->validate([
+            'amount' => ['required', 'numeric', 'min:0.01'],
+            'method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+            'paid_on' => ['required', 'date'],
+            'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
+            'notes' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        $paymentRow = $this->scopeTenant(DB::table('gym_payments')->where('id', $payment), $request, 'gym_payments')->first();
+        abort_unless($paymentRow !== null, 404, 'Pago no encontrado.');
+        abort_unless(in_array($paymentRow->status, ['pending', 'credit', 'partial'], true), 422, 'Este pago no está pendiente de cobro.');
+
+        $balanceDue = round((float) $paymentRow->amount - (float) ($paymentRow->amount_paid ?? 0), 2);
+        abort_unless($balanceDue > 0, 422, 'Este pago ya fue saldado.');
+        abort_unless((float) $data['amount'] <= $balanceDue, 422, 'El monto a cobrar supera el saldo pendiente.');
+
+        $proofPath = $data['method'] !== 'cash' && $request->hasFile('proof_photo')
+            ? $request->file('proof_photo')?->store('payment-proofs', 'public')
+            : null;
+
+        $collectionAmount = round((float) $data['amount'], 2);
+        $newAmountPaid = round((float) ($paymentRow->amount_paid ?? 0) + $collectionAmount, 2);
+        $newStatus = $newAmountPaid >= (float) $paymentRow->amount ? 'paid' : 'partial';
+
+        return DB::transaction(function () use ($request, $payment, $paymentRow, $data, $proofPath, $collectionAmount, $newAmountPaid, $newStatus): JsonResponse {
+            DB::table('gym_payments')->where('id', $payment)->update([
+                'amount_paid' => $newAmountPaid,
+                'status' => $newStatus,
+                'method' => $data['method'],
+                'proof_path' => $proofPath ?? $paymentRow->proof_path,
+                'paid_on' => Carbon::parse($data['paid_on'])->toDateString(),
+                'notes' => trim(($paymentRow->notes ?? '').' · Cobro: S/ '.number_format($collectionAmount, 2).($data['notes'] ? ' · '.$data['notes'] : '')),
+                'updated_at' => now(),
+            ]);
+
+            $collectionId = DB::table('gym_payments')->insertGetId([
+                'tenant_id' => $paymentRow->tenant_id,
+                'branch_id' => $paymentRow->branch_id,
+                'member_id' => $paymentRow->member_id,
+                'parent_payment_id' => $payment,
+                'receipt_number' => $this->nextPaymentReceiptNumber(),
+                'amount' => $collectionAmount,
+                'amount_paid' => $collectionAmount,
+                'method' => $data['method'],
+                'proof_path' => $proofPath,
+                'status' => 'paid',
+                'paid_on' => Carbon::parse($data['paid_on'])->toDateString(),
+                'customer_name' => $paymentRow->customer_name,
+                'notes' => 'Recuperación de deuda · Ref. '.$paymentRow->receipt_number.($data['notes'] ? ' · '.$data['notes'] : ''),
+                'registered_by' => $request->user()?->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return response()->json([
+                'payment_id' => $payment,
+                'collection_id' => $collectionId,
+                'status' => $newStatus,
+                'amount_paid' => $newAmountPaid,
+                'balance_due' => round(max(0, (float) $paymentRow->amount - $newAmountPaid), 2),
+            ]);
+        });
+    }
+
+    public function products(Request $request): JsonResponse
+    {
+        $query = $this->scopeTenant(DB::table('gym_products'), $request, 'gym_products')
+            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_products.branch_id')
+            ->select('gym_products.*', 'gym_branches.name as branch_name')
+            ->orderBy('gym_products.name');
+        $this->scopeBranches($query, $request, 'gym_products');
+
+        if ($request->filled('search')) {
+            $search = trim((string) $request->query('search'));
+            $query->where(function ($q) use ($search): void {
+                $q->where('gym_products.name', 'like', "%{$search}%")
+                    ->orWhere('gym_products.code', 'like', "%{$search}%")
+                    ->orWhere('gym_products.description', 'like', "%{$search}%");
+            });
+        }
+
+        if ($request->filled('branch_id')) {
+            $query->where('gym_products.branch_id', (int) $request->query('branch_id'));
+        }
+
+        return response()->json($query->get());
+    }
+
+    public function storeProduct(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'code' => ['required', 'string', 'max:50'],
+            'name' => ['required', 'string', 'max:120'],
+            'description' => ['nullable', 'string', 'max:1000'],
+            'unit_cost' => ['required', 'numeric', 'min:0'],
+            'unit_price' => ['required', 'numeric', 'min:0'],
+            'stock' => ['required', 'numeric', 'min:0'],
+            'min_stock' => ['nullable', 'numeric', 'min:0'],
+            'branch_id' => ['nullable', 'exists:gym_branches,id'],
+            'is_active' => ['required', 'boolean'],
+        ]);
+
+        $tenantId = $this->defaultTenantId($request);
+        abort_unless(! DB::table('gym_products')->where('tenant_id', $tenantId)->where('code', $data['code'])->exists(), 422, 'El código ya existe para este cliente.');
+
+        $data['tenant_id'] = $tenantId;
+        $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
+        $data['stock'] = (float) $data['stock'];
+        $data['unit_cost'] = (float) $data['unit_cost'];
+        $data['unit_price'] = (float) $data['unit_price'];
+        $data['min_stock'] = $data['min_stock'] !== null ? (float) $data['min_stock'] : null;
+        $data['created_by'] = $request->user()?->id;
+        $data['created_at'] = now();
+        $data['updated_at'] = now();
+
+        $productId = DB::table('gym_products')->insertGetId($data);
+
+        if ($data['stock'] > 0) {
+            DB::table('gym_product_movements')->insert([
+                'tenant_id' => $tenantId,
+                'branch_id' => $data['branch_id'],
+                'product_id' => $productId,
+                'type' => 'initial',
+                'quantity' => $data['stock'],
+                'unit_cost' => $data['unit_cost'],
+                'unit_price' => $data['unit_price'],
+                'total_cost' => round($data['stock'] * $data['unit_cost'], 2),
+                'total_price' => round($data['stock'] * $data['unit_price'], 2),
+                'balance_quantity' => $data['stock'],
+                'notes' => 'Stock inicial de producto',
+                'created_by' => $request->user()?->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        return response()->json(DB::table('gym_products')->find($productId), 201);
+    }
+
+    public function updateProduct(Request $request, int $product): JsonResponse
+    {
+        $data = $request->validate([
+            'code' => ['required', 'string', 'max:50'],
+            'name' => ['required', 'string', 'max:120'],
+            'description' => ['nullable', 'string', 'max:1000'],
+            'unit_cost' => ['required', 'numeric', 'min:0'],
+            'unit_price' => ['required', 'numeric', 'min:0'],
+            'stock' => ['required', 'numeric', 'min:0'],
+            'min_stock' => ['nullable', 'numeric', 'min:0'],
+            'branch_id' => ['nullable', 'exists:gym_branches,id'],
+            'is_active' => ['required', 'boolean'],
+        ]);
+
+        $tenantId = $this->defaultTenantId($request);
+        $productRow = DB::table('gym_products')->where('id', $product)->where('tenant_id', $tenantId)->first();
+        abort_unless($productRow !== null, 422, 'El producto no pertenece al cliente activo.');
+        abort_unless(! DB::table('gym_products')->where('tenant_id', $tenantId)->where('code', $data['code'])->where('id', '<>', $product)->exists(), 422, 'El código ya existe para este cliente.');
+
+        $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
+        $data['stock'] = (float) $data['stock'];
+        $data['unit_cost'] = (float) $data['unit_cost'];
+        $data['unit_price'] = (float) $data['unit_price'];
+        $data['min_stock'] = $data['min_stock'] !== null ? (float) $data['min_stock'] : null;
+        $data['updated_at'] = now();
+
+        DB::table('gym_products')->where('id', $product)->update($data);
+
+        $stockDifference = $data['stock'] - (float) $productRow->stock;
+        if ($stockDifference !== 0) {
+            DB::table('gym_product_movements')->insert([
+                'tenant_id' => $tenantId,
+                'branch_id' => $data['branch_id'],
+                'product_id' => $product,
+                'type' => $stockDifference > 0 ? 'adjustment_in' : 'adjustment_out',
+                'quantity' => abs($stockDifference),
+                'unit_cost' => $data['unit_cost'],
+                'unit_price' => $data['unit_price'],
+                'total_cost' => round(abs($stockDifference) * $data['unit_cost'], 2),
+                'total_price' => round(abs($stockDifference) * $data['unit_price'], 2),
+                'balance_quantity' => $data['stock'],
+                'notes' => 'Ajuste de stock al editar producto',
+                'created_by' => $request->user()?->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        return response()->json(DB::table('gym_products')->find($product));
+    }
+
+    public function destroyProduct(Request $request, int $product): JsonResponse
+    {
+        $hasHistory = DB::table('gym_product_sales')->where('product_id', $product)->exists()
+            || DB::table('gym_product_movements')->where('product_id', $product)->exists();
+
+        if ($hasHistory) {
+            $this->scopeTenant(DB::table('gym_products')->where('id', $product), $request, 'gym_products')->update([
+                'is_active' => false,
+                'updated_at' => now(),
+            ]);
+
+            return response()->json([
+                'ok' => true,
+                'mode' => 'deactivated',
+                'message' => 'El producto tiene movimientos; se desactivó para preservar histórico.',
+            ]);
+        }
+
+        $this->scopeTenant(DB::table('gym_products')->where('id', $product), $request, 'gym_products')->delete();
+
+        return response()->json(['ok' => true, 'mode' => 'deleted']);
+    }
+
+    public function productSales(Request $request): JsonResponse
+    {
+        $query = $this->scopeTenant(DB::table('gym_product_sales'), $request, 'gym_product_sales')
+            ->leftJoin('gym_products', 'gym_products.id', '=', 'gym_product_sales.product_id')
+            ->leftJoin('gym_members', 'gym_members.id', '=', 'gym_product_sales.member_id')
+            ->select(
+                'gym_product_sales.*',
+                'gym_products.name as product_name',
+                'gym_products.code as product_code',
+                DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name")
+            )
+            ->orderByDesc('gym_product_sales.id');
+
+        $this->scopeBranches($query, $request, 'gym_product_sales');
+
+        return response()->json($query->limit(100)->get());
+    }
+
+    public function sellProduct(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'product_id' => ['required', 'exists:gym_products,id'],
+            'member_id' => ['nullable', 'exists:gym_members,id'],
+            'customer_name' => ['nullable', 'string', 'max:120'],
+            'quantity' => ['required', 'numeric', 'min:0.01'],
+            'unit_price' => ['required', 'numeric', 'min:0'],
+            'payment_method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+            'payment_status' => ['required', Rule::in(['paid', 'credit', 'courtesy'])],
+            'sale_date' => ['required', 'date'],
+            'due_on' => ['nullable', 'date'],
+            'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
+            'notes' => ['nullable', 'string'],
+        ]);
+
+        $tenantId = $this->defaultTenantId($request);
+        $product = DB::table('gym_products')->where('id', $data['product_id'])->where('tenant_id', $tenantId)->first();
+        abort_unless($product !== null, 422, 'El producto no pertenece al cliente activo.');
+
+        if ($data['member_id'] !== null) {
+            abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $tenantId)->exists(), 422, 'El socio no pertenece al cliente activo.');
+        }
+
+        $quantity = (float) $data['quantity'];
+        abort_unless((float) $product->stock >= $quantity, 422, 'Stock insuficiente para realizar la venta.');
+
+        $saleDate = Carbon::parse($data['sale_date'])->toDateString();
+        $totalAmount = round($quantity * (float) $data['unit_price'], 2);
+        $newStock = round((float) $product->stock - $quantity, 3);
+        $paymentStatus = (string) $data['payment_status'];
+        $amountPaid = in_array($paymentStatus, ['paid', 'courtesy'], true) ? $totalAmount : 0;
+        $proofPath = $paymentStatus === 'paid' && $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
+            ? $request->file('proof_photo')?->store('payment-proofs', 'public')
+            : null;
+        $branchId = $product->branch_id ? (int) $product->branch_id : $this->branchIdForWrite($request, $data['member_id'] ? $this->memberBranchId((int) $data['member_id']) : null);
+
+        return DB::transaction(function () use ($request, $data, $tenantId, $product, $quantity, $newStock, $totalAmount, $saleDate, $paymentStatus, $amountPaid, $proofPath, $branchId): JsonResponse {
+            DB::table('gym_products')->where('id', $product->id)->update([ 'stock' => $newStock, 'updated_at' => now() ]);
+
+            $saleId = DB::table('gym_product_sales')->insertGetId([
+                'tenant_id' => $tenantId,
+                'branch_id' => $branchId,
+                'product_id' => $product->id,
+                'member_id' => $data['member_id'] ?? null,
+                'customer_name' => $data['customer_name'] ?? null,
+                'quantity' => $quantity,
+                'unit_price' => (float) $data['unit_price'],
+                'total_amount' => $totalAmount,
+                'payment_method' => $data['payment_method'],
+                'payment_status' => $paymentStatus,
+                'sale_date' => $saleDate,
+                'due_on' => $paymentStatus === 'credit' ? ($data['due_on'] ?? Carbon::parse($saleDate)->addDays(7)->toDateString()) : null,
+                'notes' => $data['notes'] ?? null,
+                'created_by' => $request->user()?->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            $paymentId = DB::table('gym_payments')->insertGetId([
+                'tenant_id' => $tenantId,
+                'branch_id' => $branchId,
+                'member_id' => $data['member_id'] ?? null,
+                'receipt_number' => $this->nextPaymentReceiptNumber(),
+                'amount' => $totalAmount,
+                'amount_paid' => $amountPaid,
+                'method' => $data['payment_method'],
+                'proof_path' => $proofPath,
+                'status' => $paymentStatus,
+                'paid_on' => $saleDate,
+                'due_on' => $paymentStatus === 'credit' ? ($data['due_on'] ?? Carbon::parse($saleDate)->addDays(7)->toDateString()) : null,
+                'customer_name' => $data['customer_name'] ?? null,
+                'notes' => 'Venta de producto: '.($product->name ?? 'Producto').($data['notes'] ? ' · '.$data['notes'] : ''),
+                'registered_by' => $request->user()?->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            DB::table('gym_product_sales')->where('id', $saleId)->update(['payment_id' => $paymentId]);
+
+            DB::table('gym_product_movements')->insert([
+                'tenant_id' => $tenantId,
+                'branch_id' => $product->branch_id,
+                'product_id' => $product->id,
+                'type' => 'sale',
+                'reference_type' => 'product_sale',
+                'reference_id' => $saleId,
+                'quantity' => $quantity,
+                'unit_cost' => (float) $product->unit_cost,
+                'unit_price' => (float) $data['unit_price'],
+                'total_cost' => round($quantity * (float) $product->unit_cost, 2),
+                'total_price' => $totalAmount,
+                'balance_quantity' => $newStock,
+                'notes' => 'Venta de producto'.($data['notes'] ? ': '.$data['notes'] : ''),
+                'created_by' => $request->user()?->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return response()->json(['sale_id' => $saleId, 'payment_id' => $paymentId], 201);
+        });
+    }
+
+    public function productMovements(Request $request): JsonResponse
+    {
+        $query = $this->scopeTenant(DB::table('gym_product_movements'), $request, 'gym_product_movements')
+            ->leftJoin('gym_products', 'gym_products.id', '=', 'gym_product_movements.product_id')
+            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_product_movements.branch_id')
+            ->select('gym_product_movements.*', 'gym_products.name as product_name', 'gym_products.code as product_code', 'gym_branches.name as branch_name')
+            ->orderByDesc('gym_product_movements.created_at');
+        $this->scopeBranches($query, $request, 'gym_product_movements');
+
+        if ($request->filled('product_id')) {
+            $query->where('gym_product_movements.product_id', (int) $request->query('product_id'));
+        }
+
+        if ($request->filled('branch_id')) {
+            $query->where('gym_product_movements.branch_id', (int) $request->query('branch_id'));
+        }
+
+        return response()->json($query->limit(200)->get()->map(function ($movement) {
+            $movement->movement_type = $movement->type;
+            $movement->concept = $movement->notes;
+
+            return $movement;
+        }));
+    }
+
+    public function purchaseProductStock(Request $request, int $product): JsonResponse
+    {
+        $data = $request->validate([
+            'quantity' => ['required', 'numeric', 'min:0.01'],
+            'unit_cost' => ['required', 'numeric', 'min:0'],
+            'notes' => ['nullable', 'string', 'max:500'],
+            'purchased_on' => ['nullable', 'date'],
+        ]);
+
+        $tenantId = $this->defaultTenantId($request);
+        $productRow = DB::table('gym_products')->where('id', $product)->where('tenant_id', $tenantId)->first();
+        abort_unless($productRow !== null, 422, 'El producto no pertenece al cliente activo.');
+
+        $quantity = (float) $data['quantity'];
+        $unitCost = (float) $data['unit_cost'];
+        $newStock = round((float) $productRow->stock + $quantity, 3);
+        $branchId = $productRow->branch_id ? (int) $productRow->branch_id : $this->branchIdForWrite($request, null);
+
+        DB::table('gym_products')->where('id', $product)->update([
+            'stock' => $newStock,
+            'unit_cost' => $unitCost,
+            'updated_at' => now(),
+        ]);
+
+        DB::table('gym_product_movements')->insert([
+            'tenant_id' => $tenantId,
+            'branch_id' => $branchId,
+            'product_id' => $product,
+            'type' => 'purchase',
+            'quantity' => $quantity,
+            'unit_cost' => $unitCost,
+            'unit_price' => (float) $productRow->unit_price,
+            'total_cost' => round($quantity * $unitCost, 2),
+            'total_price' => round($quantity * (float) $productRow->unit_price, 2),
+            'balance_quantity' => $newStock,
+            'notes' => $data['notes'] ?? 'Compra de mercadería',
+            'created_by' => $request->user()?->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return response()->json([
+            'product_id' => $product,
+            'stock' => $newStock,
+            'message' => 'Ingreso de stock registrado correctamente.',
+        ], 201);
     }
 
     public function checkIn(Request $request): JsonResponse
@@ -759,10 +1242,12 @@ class GymController extends Controller
 
             $paymentId = DB::table('gym_payments')->insertGetId([
                 'tenant_id' => $tenantId,
+                'branch_id' => $this->branchIdForWrite($request, $this->memberBranchId((int) $data['member_id'])),
                 'member_id' => $data['member_id'],
                 'training_subscription_id' => $id,
                 'receipt_number' => $this->nextPaymentReceiptNumber(),
                 'amount' => $data['monthly_fee'],
+                'amount_paid' => $data['monthly_fee'],
                 'method' => $data['payment_method'],
                 'proof_path' => $proofPath,
                 'status' => 'paid',
@@ -968,13 +1453,17 @@ class GymController extends Controller
     {
         $date = (string) $request->query('date', now()->toDateString());
 
-        return response()->json($this->scopeTenant(DB::table('gym_class_bookings'), $request, 'gym_class_bookings')
+        $query = $this->scopeTenant(DB::table('gym_class_bookings'), $request, 'gym_class_bookings')
             ->join('gym_members', 'gym_members.id', '=', 'gym_class_bookings.member_id')
+            ->join('gym_classes', 'gym_classes.id', '=', 'gym_class_bookings.class_id')
             ->select('gym_class_bookings.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_members.dni')
             ->where('gym_class_bookings.class_id', $class)
             ->where('gym_class_bookings.booking_date', $date)
-            ->orderByDesc('gym_class_bookings.id')
-            ->get());
+            ->orderByDesc('gym_class_bookings.id');
+
+        $this->scopeBranches($query, $request, 'gym_class_bookings', 'gym_classes.branch_id');
+
+        return response()->json($query->get());
     }
 
     public function storeClassBooking(Request $request, int $class): JsonResponse
@@ -986,6 +1475,9 @@ class GymController extends Controller
             'notes' => ['nullable', 'string', 'max:255'],
         ]);
         abort_unless((int) $gymClass->tenant_id === (int) $this->defaultTenantId($request), 422, 'La clase no pertenece al cliente activo.');
+        if (! $this->isSystemAdmin($request->user()) && ! in_array((int) $gymClass->branch_id, $this->userBranchIds($request), true)) {
+            abort(403, 'No tienes acceso a esta clase.');
+        }
         abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
 
         $reserved = DB::table('gym_class_bookings')
@@ -1000,14 +1492,23 @@ class GymController extends Controller
 
         DB::table('gym_class_bookings')->updateOrInsert(
             ['class_id' => $class, 'member_id' => $data['member_id'], 'booking_date' => $data['booking_date']],
-            ['tenant_id' => $this->defaultTenantId($request), 'status' => 'reserved', 'notes' => $data['notes'] ?? null, 'created_at' => now(), 'updated_at' => now()]
+            ['tenant_id' => $this->defaultTenantId($request), 'branch_id' => $gymClass->branch_id ? $this->branchIdForWrite($request, $gymClass->branch_id) : $this->branchIdForWrite($request, null), 'status' => 'reserved', 'notes' => $data['notes'] ?? null, 'created_at' => now(), 'updated_at' => now()]
         );
 
         return response()->json(['ok' => true], 201);
     }
 
-    public function checkInClassBooking(int $booking): JsonResponse
+    public function checkInClassBooking(Request $request, int $booking): JsonResponse
     {
+        $bookingRow = DB::table('gym_class_bookings')->where('id', $booking)->first();
+        abort_unless($bookingRow, 404, 'Reserva no encontrada.');
+
+        $gymClass = DB::table('gym_classes')->where('id', $bookingRow->class_id)->first();
+        abort_unless($gymClass, 404, 'Clase no encontrada.');
+        if (! $this->isSystemAdmin($request->user()) && ! in_array((int) $gymClass->branch_id, $this->userBranchIds($request), true)) {
+            abort(403, 'No tienes acceso a esta clase.');
+        }
+
         DB::table('gym_class_bookings')->where('id', $booking)->update([
             'status' => 'attended',
             'checked_in_at' => now(),
@@ -1017,8 +1518,17 @@ class GymController extends Controller
         return response()->json(['ok' => true]);
     }
 
-    public function cancelClassBooking(int $booking): JsonResponse
+    public function cancelClassBooking(Request $request, int $booking): JsonResponse
     {
+        $bookingRow = DB::table('gym_class_bookings')->where('id', $booking)->first();
+        abort_unless($bookingRow, 404, 'Reserva no encontrada.');
+
+        $gymClass = DB::table('gym_classes')->where('id', $bookingRow->class_id)->first();
+        abort_unless($gymClass, 404, 'Clase no encontrada.');
+        if (! $this->isSystemAdmin($request->user()) && ! in_array((int) $gymClass->branch_id, $this->userBranchIds($request), true)) {
+            abort(403, 'No tienes acceso a esta clase.');
+        }
+
         DB::table('gym_class_bookings')->where('id', $booking)->update([
             'status' => 'cancelled',
             'updated_at' => now(),
@@ -1116,6 +1626,7 @@ class GymController extends Controller
                 'description' => ['required', 'string', 'max:255'],
             ]);
             $data['tenant_id'] = $this->defaultTenantId($request);
+            $data['branch_id'] = $this->branchIdForWrite($request, null);
             $data['proof_path'] = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
                 ? $request->file('proof_photo')?->store('expense-proofs', 'public')
                 : null;
@@ -1125,7 +1636,18 @@ class GymController extends Controller
             DB::table('gym_expenses')->insert($data);
         }
 
-        return response()->json($this->scopeTenant(DB::table('gym_expenses'), $request, 'gym_expenses')->orderByDesc('spent_on')->limit(80)->get()->map(function ($expense) {
+        $query = $this->scopeTenant(DB::table('gym_expenses'), $request, 'gym_expenses')
+            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_expenses.branch_id')
+            ->select('gym_expenses.*', 'gym_branches.name as branch_name')
+            ->orderByDesc('spent_on');
+
+        $this->scopeBranches($query, $request, 'gym_expenses');
+
+        if ($request->filled('branch_id')) {
+            $query->where('gym_expenses.branch_id', (int) $request->query('branch_id'));
+        }
+
+        return response()->json($query->limit(80)->get()->map(function ($expense) {
             $expense->proof_url = $expense->proof_path ? Storage::disk('public')->url($expense->proof_path) : null;
 
             return $expense;
@@ -1336,6 +1858,25 @@ class GymController extends Controller
                 ['label' => $label, 'is_enabled' => in_array($module, $enabledModules, true), 'created_at' => now(), 'updated_at' => now()]
             );
         }
+    }
+
+    private function memberBranchId(int $memberId): ?int
+    {
+        $branchId = DB::table('gym_members')->where('id', $memberId)->value('branch_id');
+
+        return $branchId ? (int) $branchId : null;
+    }
+
+    private function enrichPayment(object $payment): object
+    {
+        $amount = (float) $payment->amount;
+        $amountPaid = (float) ($payment->amount_paid ?? 0);
+        $payment->amount_paid = $amountPaid;
+        $payment->balance_due = round(max(0, $amount - $amountPaid), 2);
+        $payment->proof_url = $payment->proof_path ? Storage::disk('public')->url($payment->proof_path) : null;
+        $payment->payer_name = $payment->customer_name ?? ($payment->payer_display ?? $payment->member_name ?? null);
+
+        return $payment;
     }
 
     private function normalizeReniecDate(string $value): string
