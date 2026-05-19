@@ -89,19 +89,35 @@ class GymController extends Controller
     private function scopeBranches($query, Request $request, string $table, ?string $branchColumn = null): void
     {
         $user = $request->user();
-        if ($this->isTenantAdmin($user)) {
+        $branchIds = $this->userBranchIds($request);
+
+        if ($branchIds !== []) {
+            $column = $branchColumn ?? $table.'.branch_id';
+            $query->whereIn($column, $branchIds);
+
             return;
         }
 
+        if ($this->isTenantAdmin($user) || $this->isSystemAdmin($user)) {
+            return;
+        }
+
+        $query->whereRaw('1 = 0');
+    }
+
+    private function assertMemberAccessible(Request $request, int $memberId): void
+    {
         $branchIds = $this->userBranchIds($request);
         if ($branchIds === []) {
-            $query->whereRaw('1 = 0');
-
             return;
         }
 
-        $column = $branchColumn ?? $table.'.branch_id';
-        $query->whereIn($column, $branchIds);
+        $memberBranchId = DB::table('gym_members')->where('id', $memberId)->value('branch_id');
+        abort_unless(
+            $memberBranchId !== null && in_array((int) $memberBranchId, $branchIds, true),
+            403,
+            'El socio no pertenece a su sede.'
+        );
     }
 
     private function tableHasColumn(string $table, string $column): bool
@@ -204,6 +220,14 @@ class GymController extends Controller
             ->whereBetween('gym_memberships.ends_on', [$today->toDateString(), $today->copy()->addDays(7)->toDateString()])
             ->count();
 
+        $planMixQuery = $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
+            ->join('gym_members', 'gym_members.id', '=', 'gym_memberships.member_id')
+            ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
+            ->select('gym_plans.name', DB::raw('count(*) as total'))
+            ->where('gym_memberships.status', 'active')
+            ->groupBy('gym_plans.name');
+        $this->scopeBranches($planMixQuery, $request, 'gym_memberships', 'gym_members.branch_id');
+
         return response()->json([
             'kpis' => [
                 ['label' => 'Socios activos', 'value' => $membersQuery->where('status', 'active')->count(), 'hint' => 'Clientes con estado activo'],
@@ -215,12 +239,7 @@ class GymController extends Controller
             ],
             'accounts_receivable' => $accountsReceivable,
             'attendance_today' => $attendanceQuery->whereDate('checked_in_at', $today->toDateString())->count(),
-            'plan_mix' => $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
-                ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
-                ->select('gym_plans.name', DB::raw('count(*) as total'))
-                ->where('gym_memberships.status', 'active')
-                ->groupBy('gym_plans.name')
-                ->get(),
+            'plan_mix' => $planMixQuery->get(),
             'notifications' => $notificationsQuery->whereNull('read_at')->latest()->limit(6)->get(),
             'enabled_modules' => $this->enabledModules($request),
         ]);
@@ -584,6 +603,7 @@ class GymController extends Controller
 
         $tenantId = $this->defaultTenantId($request);
         abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $tenantId)->exists(), 422, 'El socio no pertenece al cliente activo.');
+        $this->assertMemberAccessible($request, (int) $data['member_id']);
         $plan = DB::table('gym_plans')->where('id', $data['plan_id'])->where('tenant_id', $tenantId)->first();
         abort_unless($plan !== null, 422, 'El plan no pertenece al cliente activo.');
         $starts = Carbon::parse($data['starts_on']);
@@ -641,7 +661,14 @@ class GymController extends Controller
         $query = $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
             ->join('gym_members', 'gym_members.id', '=', 'gym_memberships.member_id')
             ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
-            ->select('gym_memberships.*', DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"), 'gym_plans.name as plan_name')
+            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_members.branch_id')
+            ->select(
+                'gym_memberships.*',
+                DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"),
+                'gym_plans.name as plan_name',
+                'gym_branches.name as branch_name',
+                'gym_members.branch_id'
+            )
             ->orderByDesc('gym_memberships.id');
 
         $this->scopeBranches($query, $request, 'gym_memberships', 'gym_members.branch_id');
@@ -1223,13 +1250,14 @@ class GymController extends Controller
 
     public function trainingSubscriptions(Request $request): JsonResponse
     {
-        return response()->json($this->scopeTenant(DB::table('gym_training_subscriptions'), $request, 'gym_training_subscriptions')
+        $query = $this->scopeTenant(DB::table('gym_training_subscriptions'), $request, 'gym_training_subscriptions')
             ->join('gym_members', 'gym_members.id', '=', 'gym_training_subscriptions.member_id')
             ->leftJoin('gym_payments', 'gym_payments.training_subscription_id', '=', 'gym_training_subscriptions.id')
             ->select(
                 'gym_training_subscriptions.*',
                 DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"),
                 'gym_members.dni',
+                'gym_members.branch_id',
                 'gym_payments.id as payment_id',
                 'gym_payments.receipt_number as payment_receipt_number',
                 'gym_payments.amount as payment_amount',
@@ -1238,9 +1266,11 @@ class GymController extends Controller
                 'gym_payments.paid_on as payment_paid_on',
                 'gym_payments.proof_path as payment_proof_path'
             )
-            ->orderByDesc('gym_training_subscriptions.id')
-            ->limit(100)
-            ->get()
+            ->orderByDesc('gym_training_subscriptions.id');
+
+        $this->scopeBranches($query, $request, 'gym_training_subscriptions', 'gym_members.branch_id');
+
+        return response()->json($query->limit(100)->get()
             ->map(function ($subscription) {
                 $subscription->selected_days = json_decode((string) $subscription->selected_days, true) ?: [];
                 $subscription->day_schedules = json_decode((string) ($subscription->day_schedules ?? ''), true) ?: [];
