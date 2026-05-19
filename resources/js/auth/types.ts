@@ -5,6 +5,7 @@ export type AuthUser = {
   is_superadmin: boolean;
   tenant_id?: number | null;
   branch_id?: number | null;
+  branch_name?: string | null;
   role_slug?: string | null;
   role_name?: string | null;
   permissions?: string[];

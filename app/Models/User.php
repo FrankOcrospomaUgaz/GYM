@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\DB;
 
 class User extends Authenticatable
 {
@@ -94,6 +95,9 @@ class User extends Authenticatable
             'is_superadmin' => $this->is_superadmin,
             'tenant_id' => $this->tenant_id,
             'branch_id' => $this->branch_id,
+            'branch_name' => $this->branch_id
+                ? DB::table('gym_branches')->where('id', $this->branch_id)->value('name')
+                : null,
             'role_slug' => $this->role?->slug,
             'role_name' => $this->role?->name,
             'permissions' => $this->role?->permissions

@@ -1,13 +1,12 @@
 import { Lock, Mail } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import { useApexTheme } from "../context/ThemeContext";
 import { useAuth } from "../context/AuthContext";
 
 export function LoginPage() {
   const { isLight } = useApexTheme();
   const { login, isAuthenticated, loading } = useAuth();
-  const nav = useNavigate();
   const [form, setForm] = useState({ email: "", password: "", remember: true });
   const [error, setError] = useState<string | null>(null);
 
@@ -20,7 +19,8 @@ export function LoginPage() {
     setError(null);
     try {
       await login(form);
-      nav("/", { replace: true });
+      window.location.replace("/");
+      return;
     } catch {
       setError("Credenciales inválidas.");
     }

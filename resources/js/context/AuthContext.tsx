@@ -42,9 +42,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     try {
       await authLogout();
-      setUser(null);
+    } catch {
+      /* Si la sesión ya expiró, igual forzamos salida limpia */
     } finally {
+      setUser(null);
+      window.__AUTH__ = null;
       setLoading(false);
+      window.location.replace("/login");
     }
   };
 

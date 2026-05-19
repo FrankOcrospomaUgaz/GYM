@@ -1,30 +1,19 @@
-﻿import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+﻿import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit3, Eye, IdCard, LayoutDashboard, LogOut, Menu, MessageCircle, PackageCheck, Plus, QrCode, Search, ShieldCheck, Trash2, Trophy, Users, X } from "lucide-react";
 import { httpClient } from "../http/client";
+import { parseApiError, registerHttpErrorHandlers } from "../http/api-errors";
 import { useAuth } from "../context/AuthContext";
 
 type AnyRow = Record<string, any>;
 type Tab = "dashboard" | "members" | "plans" | "memberships" | "attendance" | "classes" | "finance" | "products" | "equipment" | "system";
 type ConfirmState = { title: string; body: string; onConfirm: () => Promise<void> } | null;
-type ErrorState = { title: string; message: string; details?: string[] } | null;
+type ErrorState = { title: string; message: string; details?: string[]; sessionExpired?: boolean } | null;
 type MemberModalContext = "general" | "training";
 type ClassViewMode = "mes" | "semana" | "tabla";
 
 const classDisciplines = ["MMA", "Sparring", "Box", "Brazilian Jiu-Jitsu", "Muay Thai", "Funcional", "Cardio", "Fuerza", "Yoga"];
 const expenseCategories = ["Alquiler", "Servicios", "Sueldos", "Limpieza", "Mantenimiento", "Equipos", "Marketing", "Internet", "Impuestos", "Software", "Insumos", "Seguridad", "Otros"];
 const incomeCategories = ["Venta externa", "Alquiler de ambiente", "Venta de productos", "Patrocinio", "Evento", "Clase particular", "Recuperación de deuda", "Otros"];
-const validationFieldLabels: Record<string, string> = {
-  member_id: "Socio",
-  discipline: "Disciplina",
-  monthly_fee: "Mensualidad",
-  starts_on: "Fecha de inicio",
-  selected_days: "Días de entrenamiento",
-  day_schedules: "Horarios",
-  payment_method: "Medio de pago",
-  proof_photo: "Foto del comprobante",
-  sessions_per_week: "Sesiones por semana",
-};
-
 const tabs: { id: Tab; label: string; icon: any }[] = [
   { id: "dashboard", label: "Panel", icon: LayoutDashboard },
   { id: "members", label: "Socios", icon: Users },
@@ -375,48 +364,6 @@ async function appendFormValue(formData: FormData, key: string, value: unknown) 
   formData.append(key, value as string | Blob);
 }
 
-function friendlyErrorMessage(error: unknown) {
-  const response = (error as { response?: { status?: number; data?: AnyRow } })?.response;
-  const data = response?.data ?? {};
-  const details = Object.entries(data.errors ?? {}).flatMap(([field, messages]) => {
-    const label = validationFieldLabels[field] ?? field;
-    const list = Array.isArray(messages) ? messages : [messages];
-    return list.map((message) => translateValidationMessage(label, String(message)));
-  });
-
-  if (details.length > 0) {
-    return {
-      message: "No se pudo guardar la mensualidad porque hay datos pendientes o inválidos.",
-      details,
-    };
-  }
-
-  const rawMessage = String(data.message ?? "");
-  if (rawMessage) return { message: translateGeneralError(rawMessage), details: [] };
-  if (response?.status === 413) return { message: "El comprobante es demasiado pesado. Intente con una imagen más liviana.", details: [] };
-
-  return { message: "Ocurrió un problema inesperado. Revise su conexión e intente nuevamente.", details: [] };
-}
-
-function translateValidationMessage(label: string, message: string) {
-  const lower = message.toLowerCase();
-  if (lower.includes("field is required")) return `${label} es obligatorio.`;
-  if (lower.includes("failed to upload")) return `${label} no se pudo subir. Intente con una imagen JPG o PNG más liviana.`;
-  if (lower.includes("must be an image") || lower.includes("must be a file of type")) return `${label} debe ser una imagen JPG, PNG o WEBP.`;
-  if (lower.includes("may not be greater than")) return `${label} supera el tamaño permitido.`;
-  if (lower.includes("has already been taken") || lower.includes("duplic")) return `${label} ya existe con esos datos.`;
-  return `${label}: ${translateGeneralError(message)}`;
-}
-
-function translateGeneralError(message: string) {
-  return message
-    .replace("The payment method field is required.", "El medio de pago es obligatorio.")
-    .replace("The proof photo failed to upload.", "La foto del comprobante no se pudo subir.")
-    .replace("The proof photo field must be an image.", "La foto del comprobante debe ser una imagen.")
-    .replace("The selected days field is required.", "Debe seleccionar los días de entrenamiento.")
-    .replace("The day schedules field is required.", "Debe configurar los horarios de entrenamiento.");
-}
-
 function nextDateForWeekday(weekday: string) {
   const weekdays = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
   const target = weekdays.indexOf(weekday);
@@ -507,9 +454,13 @@ function defaultBranchId(user: AnyRow | null | undefined, branches: AnyRow[]) {
   return branches[0]?.id ? String(branches[0].id) : "";
 }
 
+function hasAssignedBranch(row: AnyRow) {
+  return row.branch_id != null && String(row.branch_id) !== "";
+}
+
 function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
   return [
-    ...payments.map((payment) => ({
+    ...payments.filter(hasAssignedBranch).map((payment) => ({
       id: `payment-${payment.id}`,
       payment_id: payment.id,
       movement_type: "income",
@@ -524,8 +475,9 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
       proof_url: payment.proof_url,
       status: payment.status,
       branch_name: payment.branch_name,
+      branch_id: payment.branch_id,
     })),
-    ...expenses.map((expense) => ({
+    ...expenses.filter(hasAssignedBranch).map((expense) => ({
       id: `expense-${expense.id}`,
       movement_type: "expense",
       concept: expense.description || expense.category,
@@ -535,6 +487,8 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
       movement_date: expense.spent_on,
       proof_url: expense.proof_url,
       status: "paid",
+      branch_name: expense.branch_name,
+      branch_id: expense.branch_id,
     })),
   ].sort((a, b) => String(b.movement_date ?? "").localeCompare(String(a.movement_date ?? "")));
 }
@@ -650,6 +604,8 @@ export function GymPage() {
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [errorModal, setErrorModal] = useState<ErrorState>(null);
+  const sessionRedirectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const silentRequest = { skipGlobalErrorHandler: true };
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [browserNotificationsEnabled, setBrowserNotificationsEnabled] = useState(() => typeof Notification !== "undefined" && Notification.permission === "granted");
   const [message, setMessage] = useState("");
@@ -665,7 +621,47 @@ export function GymPage() {
     const enabled = new Set<string>(dashboard.enabled_modules ?? tabs.filter((item) => item.id !== "system").map((item) => item.id));
     return tabs.filter((item) => item.id !== "system" && enabled.has(item.id));
   }, [dashboard.enabled_modules, user?.is_superadmin]);
+  const headerBranchName = useMemo(() => {
+    if (user?.branch_name) return user.branch_name;
+    if (user?.branch_id) {
+      const branch = branches.find((item) => String(item.id) === String(user.branch_id));
+      if (branch?.name) return String(branch.name);
+    }
+    if (branches.length === 1) return String(branches[0].name);
+    return user?.is_superadmin || !user?.branch_id ? "Todas las sedes" : "Mi sede";
+  }, [branches, user?.branch_id, user?.branch_name, user?.is_superadmin]);
   const currentTab = visibleTabs.find((item) => item.id === tab) ?? visibleTabs[0] ?? tabs[0];
+
+  useEffect(() => {
+    registerHttpErrorHandlers({
+      onSessionExpired: () => {
+        setErrorModal({
+          title: "Sesión expirada",
+          message: "Tu sesión ya no es válida. Serás redirigido al inicio de sesión en unos segundos, o puedes ir ahora.",
+          sessionExpired: true,
+        });
+        if (sessionRedirectRef.current) clearTimeout(sessionRedirectRef.current);
+        sessionRedirectRef.current = setTimeout(() => {
+          window.__AUTH__ = null;
+          window.location.replace("/login");
+        }, 4000);
+      },
+      onApiError: (error, title) => {
+        const parsed = parseApiError(error, title);
+        setErrorModal({ title: parsed.title, message: parsed.message, details: parsed.details });
+      },
+    });
+    return () => {
+      registerHttpErrorHandlers(null);
+      if (sessionRedirectRef.current) clearTimeout(sessionRedirectRef.current);
+    };
+  }, []);
+
+  function goToLogin() {
+    if (sessionRedirectRef.current) clearTimeout(sessionRedirectRef.current);
+    window.__AUTH__ = null;
+    window.location.replace("/login");
+  }
 
   function selectTab(nextTab: Tab) {
     setTab(nextTab);
@@ -674,21 +670,21 @@ export function GymPage() {
 
   async function loadAll() {
     const results = await Promise.allSettled([
-      httpClient.get("/api/gym/dashboard"),
-      httpClient.get("/api/gym/branches"),
-      httpClient.get("/api/gym/fitness-goals"),
-      httpClient.get("/api/gym/plans"),
-      httpClient.get("/api/gym/members", { params: { search: memberSearch, status: memberStatusFilter, branch_id: memberBranchFilter, page: membersPage, per_page: membersPerPage } }),
-      httpClient.get("/api/gym/memberships"),
-      httpClient.get("/api/gym/payments", { params: { branch_id: financeBranchFilter || undefined } }),
-      httpClient.get("/api/gym/expenses", { params: { branch_id: financeBranchFilter || undefined } }),
-      httpClient.get("/api/gym/attendance"),
-      httpClient.get("/api/gym/classes"),
-      httpClient.get("/api/gym/training-subscriptions"),
-      httpClient.get("/api/gym/equipment"),
-      httpClient.get("/api/gym/products", { params: { branch_id: productBranchFilter || undefined } }),
-      httpClient.get("/api/gym/product-sales", { params: { branch_id: productBranchFilter || undefined } }),
-      httpClient.get("/api/gym/notifications"),
+      httpClient.get("/api/gym/dashboard", silentRequest),
+      httpClient.get("/api/gym/branches", silentRequest),
+      httpClient.get("/api/gym/fitness-goals", silentRequest),
+      httpClient.get("/api/gym/plans", silentRequest),
+      httpClient.get("/api/gym/members", { ...silentRequest, params: { search: memberSearch, status: memberStatusFilter, branch_id: memberBranchFilter, page: membersPage, per_page: membersPerPage } }),
+      httpClient.get("/api/gym/memberships", silentRequest),
+      httpClient.get("/api/gym/payments", { ...silentRequest, params: { branch_id: financeBranchFilter || undefined } }),
+      httpClient.get("/api/gym/expenses", { ...silentRequest, params: { branch_id: financeBranchFilter || undefined } }),
+      httpClient.get("/api/gym/attendance", silentRequest),
+      httpClient.get("/api/gym/classes", silentRequest),
+      httpClient.get("/api/gym/training-subscriptions", silentRequest),
+      httpClient.get("/api/gym/equipment", silentRequest),
+      httpClient.get("/api/gym/products", { ...silentRequest, params: { branch_id: productBranchFilter || undefined } }),
+      httpClient.get("/api/gym/product-sales", { ...silentRequest, params: { branch_id: productBranchFilter || undefined } }),
+      httpClient.get("/api/gym/notifications", silentRequest),
     ]);
 
     const data = <T,>(index: number, fallback: T): T => {
@@ -722,7 +718,7 @@ export function GymPage() {
 
     if (user?.is_superadmin) {
       try {
-        const saasRes = await httpClient.get("/api/gym/saas");
+        const saasRes = await httpClient.get("/api/gym/saas", silentRequest);
         setSaas(saasRes.data);
       } catch {
         /* SaaS opcional */
@@ -1055,13 +1051,18 @@ export function GymPage() {
   async function saveProductSale(event: FormEvent) {
     event.preventDefault();
     setMessage("");
-    const formData = new FormData();
-    for (const [key, value] of Object.entries(productSaleForm)) await appendFormValue(formData, key, value);
-    await httpClient.post("/api/gym/product-sales", formData);
-    setMessage("Venta de producto registrada correctamente.");
-    setProductSaleModalOpen(false);
-    setSelectedProduct(null);
-    await loadAll();
+    setErrorModal(null);
+    try {
+      const formData = new FormData();
+      for (const [key, value] of Object.entries(productSaleForm)) await appendFormValue(formData, key, value);
+      await httpClient.post("/api/gym/product-sales", formData, { errorTitle: "No se pudo registrar la venta" });
+      setMessage("Venta de producto registrada correctamente.");
+      setProductSaleModalOpen(false);
+      setSelectedProduct(null);
+      await loadAll();
+    } catch {
+      /* El interceptor muestra el modal de error */
+    }
   }
 
   function openStockPurchase(product: AnyRow) {
@@ -1333,11 +1334,15 @@ export function GymPage() {
       setMessage(editingTrainingSubscriptionId ? "Mensualidad actualizada correctamente." : "Mensualidad registrada correctamente.");
       await loadAll();
     } catch (error) {
-      const friendly = friendlyErrorMessage(error);
+      const friendly = parseApiError(
+        error,
+        editingTrainingSubscriptionId ? "No se pudo actualizar la mensualidad" : "No se pudo registrar la mensualidad",
+      );
       setErrorModal({
-        title: editingTrainingSubscriptionId ? "No se pudo actualizar la mensualidad" : "No se pudo registrar la mensualidad",
+        title: friendly.title,
         message: friendly.message,
         details: friendly.details,
+        sessionExpired: friendly.sessionExpired,
       });
     } finally {
       setTrainingSubscriptionSaving(false);
@@ -1373,7 +1378,7 @@ export function GymPage() {
               <button type="button" onClick={() => setMobileMenuOpen(true)} className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-zinc-950 text-white shadow-sm lg:hidden" aria-label="Abrir menú"><Menu className="h-5 w-5" /></button>
               <div className="min-w-0">
                 <p className="truncate text-[10px] font-black uppercase tracking-[0.22em] text-[#d9a900] sm:text-xs sm:tracking-[0.28em]">Gestión profesional</p>
-                <h1 className="truncate text-xl font-black sm:text-2xl">Control total del gimnasio</h1>
+                <h1 className="truncate text-xl font-black sm:text-2xl">{headerBranchName}</h1>
                 <p className="mt-0.5 text-xs font-bold text-zinc-500 lg:hidden">{currentTab.label}</p>
               </div>
             </div>
@@ -1441,7 +1446,7 @@ export function GymPage() {
       <MemberCredentialModal member={credentialMember} membership={credentialMember ? memberActiveMembership(credentialMember, memberships) : null} onClose={() => setCredentialMember(null)} onCheckIn={(memberId) => void checkIn(memberId)} />
       <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => { setMemberModalContext("general"); setMemberModalOpen(false); }} onSubmit={saveMember} />
       <ConfirmModal state={confirm} onClose={() => setConfirm(null)} />
-      <ErrorModal state={errorModal} onClose={() => setErrorModal(null)} />
+      <ErrorModal state={errorModal} onClose={() => setErrorModal(null)} onGoToLogin={goToLogin} />
     </div>
   );
 }
@@ -1622,16 +1627,18 @@ function ProductsModule({ products, productSales, branches, branchFilter, onBran
 
 function FinanceModule({ movements, payments, expenses, branches, branchFilter, onBranchFilterChange, onNewIncome, onNewExpense, onCollectPayment }: { movements: AnyRow[]; payments: AnyRow[]; expenses: AnyRow[]; branches: AnyRow[]; branchFilter: string; onBranchFilterChange: (value: string) => void; onNewIncome: () => void; onNewExpense: () => void; onCollectPayment: (payment: AnyRow) => void }) {
   const methods = ["cash", "yape", "plin", "transfer", "card"];
-  const confirmedPayments = payments.filter((payment) => payment.status === "paid");
+  const branchScopedPayments = payments.filter(hasAssignedBranch);
+  const branchScopedExpenses = expenses.filter(hasAssignedBranch);
+  const confirmedPayments = branchScopedPayments.filter((payment) => payment.status === "paid");
   const incomeByMethod = methods.map((method) => ({
     method,
     amount: confirmedPayments.filter((payment) => payment.method === method).reduce((sum, payment) => sum + Number(payment.amount_paid ?? payment.amount ?? 0), 0),
   }));
   const totalIncome = incomeByMethod.reduce((sum, item) => sum + item.amount, 0);
-  const totalExpenses = expenses.reduce((sum, expense) => sum + Number(expense.amount ?? 0), 0);
-  const receivables = payments.filter((payment) => ["pending", "credit", "partial"].includes(String(payment.status)));
+  const totalExpenses = branchScopedExpenses.reduce((sum, expense) => sum + Number(expense.amount ?? 0), 0);
+  const receivables = branchScopedPayments.filter((payment) => ["pending", "credit", "partial"].includes(String(payment.status)));
   const accountsReceivable = receivables.reduce((sum, payment) => sum + Number(payment.balance_due ?? payment.amount ?? 0), 0);
-  const courtesyAmount = payments.filter((payment) => payment.status === "courtesy").reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0);
+  const courtesyAmount = branchScopedPayments.filter((payment) => payment.status === "courtesy").reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0);
 
   return (
     <div className="space-y-4">
@@ -2626,10 +2633,10 @@ function ConfirmModal({ state, onClose }: { state: ConfirmState; onClose: () => 
   return <Modal open title={state.title} subtitle={state.body} onClose={onClose}><div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button onClick={onClose} className="rounded-2xl border border-zinc-200 px-5 py-3 text-sm font-black">Cancelar</button><button onClick={() => void state.onConfirm().finally(onClose)} className="rounded-2xl bg-red-600 px-5 py-3 text-sm font-black text-white">Confirmar</button></div></Modal>;
 }
 
-function ErrorModal({ state, onClose }: { state: ErrorState; onClose: () => void }) {
+function ErrorModal({ state, onClose, onGoToLogin }: { state: ErrorState; onClose: () => void; onGoToLogin: () => void }) {
   if (!state) return null;
   return (
-    <Modal open title={state.title} subtitle={state.message} onClose={onClose}>
+    <Modal open title={state.title} subtitle={state.message} onClose={state.sessionExpired ? onGoToLogin : onClose}>
       <div className="space-y-4">
         {state.details?.length ? (
           <div className="rounded-3xl border border-red-100 bg-red-50 p-4">
@@ -2640,10 +2647,16 @@ function ErrorModal({ state, onClose }: { state: ErrorState; onClose: () => void
           </div>
         ) : null}
         <div className="rounded-3xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-600">
-          Corrige los datos indicados y vuelve a intentar. La información del formulario no se ha perdido.
+          {state.sessionExpired
+            ? "Si no haces nada, la página te llevará al inicio de sesión automáticamente."
+            : "Corrige los datos indicados y vuelve a intentar. La información del formulario no se ha perdido."}
         </div>
-        <div className="flex justify-end">
-          <button onClick={onClose} className="rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-black text-white">Entendido</button>
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          {state.sessionExpired ? (
+            <button onClick={onGoToLogin} className="rounded-2xl bg-[#ffcc00] px-5 py-3 text-sm font-black text-zinc-950">Ir a iniciar sesión</button>
+          ) : (
+            <button onClick={onClose} className="rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-black text-white">Entendido</button>
+          )}
         </div>
       </div>
     </Modal>

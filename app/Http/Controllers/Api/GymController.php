@@ -718,6 +718,7 @@ class GymController extends Controller
 
         if ($this->tableHasColumn('gym_payments', 'branch_id')) {
             $query->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_payments.branch_id');
+            $query->whereNotNull('gym_payments.branch_id');
             $this->scopeBranches($query, $request, 'gym_payments');
             if ($request->filled('branch_id')) {
                 $query->where('gym_payments.branch_id', (int) $request->query('branch_id'));
@@ -1000,6 +1001,8 @@ class GymController extends Controller
             'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
             'notes' => ['nullable', 'string'],
         ]);
+
+        $data['member_id'] = filled($data['member_id'] ?? null) ? (int) $data['member_id'] : null;
 
         $tenantId = $this->defaultTenantId($request);
         $product = DB::table('gym_products')->where('id', $data['product_id'])->where('tenant_id', $tenantId)->first();
@@ -1688,6 +1691,7 @@ class GymController extends Controller
         if ($this->tableHasColumn('gym_expenses', 'branch_id')) {
             $query->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_expenses.branch_id')
                 ->select('gym_expenses.*', 'gym_branches.name as branch_name');
+            $query->whereNotNull('gym_expenses.branch_id');
             $this->scopeBranches($query, $request, 'gym_expenses');
             if ($request->filled('branch_id')) {
                 $query->where('gym_expenses.branch_id', (int) $request->query('branch_id'));

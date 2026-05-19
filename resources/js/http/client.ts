@@ -1,4 +1,5 @@
 import axios from "axios";
+import { dispatchHttpError } from "./api-errors";
 
 /**
  * Axios + Laravel: debe enviar CSRF usando la cookie cifrada `XSRF-TOKEN`.
@@ -14,3 +15,11 @@ export const httpClient = axios.create({
     "X-Requested-With": "XMLHttpRequest",
   },
 });
+
+httpClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    dispatchHttpError(error);
+    return Promise.reject(error);
+  },
+);
