@@ -200,8 +200,8 @@ class GymController extends Controller
         }
 
         $expiring = $membershipsQuery
-            ->where('status', 'active')
-            ->whereBetween('ends_on', [$today->toDateString(), $today->copy()->addDays(7)->toDateString()])
+            ->where('gym_memberships.status', 'active')
+            ->whereBetween('gym_memberships.ends_on', [$today->toDateString(), $today->copy()->addDays(7)->toDateString()])
             ->count();
 
         return response()->json([
@@ -1003,6 +1003,9 @@ class GymController extends Controller
         ]);
 
         $data['member_id'] = filled($data['member_id'] ?? null) ? (int) $data['member_id'] : null;
+        $data['customer_name'] = filled($data['customer_name'] ?? null) ? trim((string) $data['customer_name']) : null;
+        $data['notes'] = filled($data['notes'] ?? null) ? trim((string) $data['notes']) : null;
+        $data['due_on'] = filled($data['due_on'] ?? null) ? Carbon::parse($data['due_on'])->toDateString() : null;
 
         $tenantId = $this->defaultTenantId($request);
         $product = DB::table('gym_products')->where('id', $data['product_id'])->where('tenant_id', $tenantId)->first();
@@ -1041,7 +1044,7 @@ class GymController extends Controller
                 'payment_status' => $paymentStatus,
                 'sale_date' => $saleDate,
                 'due_on' => $paymentStatus === 'credit' ? ($data['due_on'] ?? Carbon::parse($saleDate)->addDays(7)->toDateString()) : null,
-                'notes' => $data['notes'] ?? null,
+                'notes' => $data['notes'],
                 'created_by' => $request->user()?->id,
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -1059,8 +1062,8 @@ class GymController extends Controller
                 'status' => $paymentStatus,
                 'paid_on' => $saleDate,
                 'due_on' => $paymentStatus === 'credit' ? ($data['due_on'] ?? Carbon::parse($saleDate)->addDays(7)->toDateString()) : null,
-                'customer_name' => $data['customer_name'] ?? null,
-                'notes' => 'Venta de producto: '.($product->name ?? 'Producto').($data['notes'] ? ' · '.$data['notes'] : ''),
+                'customer_name' => $data['customer_name'],
+                'notes' => 'Venta de producto: '.($product->name ?? 'Producto').($data['notes'] !== null ? ' · '.$data['notes'] : ''),
                 'registered_by' => $request->user()?->id,
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -1081,7 +1084,7 @@ class GymController extends Controller
                 'total_cost' => round($quantity * (float) $product->unit_cost, 2),
                 'total_price' => $totalAmount,
                 'balance_quantity' => $newStock,
-                'notes' => 'Venta de producto'.($data['notes'] ? ': '.$data['notes'] : ''),
+                'notes' => 'Venta de producto'.($data['notes'] !== null ? ': '.$data['notes'] : ''),
                 'created_by' => $request->user()?->id,
                 'created_at' => now(),
                 'updated_at' => now(),
