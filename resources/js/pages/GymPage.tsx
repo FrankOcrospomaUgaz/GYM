@@ -1101,7 +1101,7 @@ export function GymPage() {
       </aside>
 
       <main className="min-w-0 lg:pl-72">
-        <header className="sticky top-0 z-20 border-b border-zinc-200 bg-white/90 px-3 py-3 backdrop-blur-xl sm:px-4 lg:px-8 lg:py-4">
+        <header className="sticky top-0 z-20 relative border-b border-zinc-200 bg-white/90 px-3 py-3 backdrop-blur-xl sm:px-4 lg:px-8 lg:py-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-4">
             <div className="flex min-w-0 items-center gap-3">
               <button type="button" onClick={() => setMobileMenuOpen(true)} className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-zinc-950 text-white shadow-sm lg:hidden" aria-label="Abrir menú"><Menu className="h-5 w-5" /></button>
@@ -1116,7 +1116,7 @@ export function GymPage() {
               <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => event.key === "Enter" && (setMembersPage(1), setMemberSearch(search))} placeholder="Buscar socio, DNI o código" className="h-11 min-w-0 flex-1 border-0 bg-transparent px-3 text-sm outline-none" />
               <button onClick={() => { setMembersPage(1); setMemberSearch(search); }} className="rounded-xl bg-zinc-950 px-3 py-2 text-xs font-bold text-white">Buscar</button>
             </div>
-            <div className="relative">
+            <div className="absolute right-3 top-3 z-30 lg:static lg:ml-0">
               <button type="button" onClick={() => setNotificationPanelOpen((open) => !open)} className="relative grid h-11 w-11 place-items-center rounded-2xl bg-zinc-950 text-white shadow-sm" aria-label="Ver notificaciones">
                 <Bell className="h-5 w-5" />
                 {unreadNotifications.length ? <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[#ffcc00] px-1 text-[10px] font-black text-zinc-950">{unreadNotifications.length}</span> : null}
