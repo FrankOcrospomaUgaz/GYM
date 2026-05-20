@@ -1714,22 +1714,27 @@ class GymController extends Controller
 
     public function trainingSubscriptions(Request $request): JsonResponse
     {
+        $select = [
+            'gym_training_subscriptions.*',
+            DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"),
+            'gym_members.dni',
+            'gym_members.branch_id',
+            'gym_payments.id as payment_id',
+            'gym_payments.receipt_number as payment_receipt_number',
+            'gym_payments.amount as payment_amount',
+            'gym_payments.method as payment_method_recorded',
+            'gym_payments.status as payment_status',
+            'gym_payments.paid_on as payment_paid_on',
+            'gym_payments.proof_path as payment_proof_path',
+        ];
+        if ($this->tableHasColumn('gym_payments', 'payment_methods')) {
+            $select[] = 'gym_payments.payment_methods as payment_methods';
+        }
+
         $query = $this->scopeTenant(DB::table('gym_training_subscriptions'), $request, 'gym_training_subscriptions')
             ->join('gym_members', 'gym_members.id', '=', 'gym_training_subscriptions.member_id')
             ->leftJoin('gym_payments', 'gym_payments.training_subscription_id', '=', 'gym_training_subscriptions.id')
-            ->select(
-                'gym_training_subscriptions.*',
-                DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"),
-                'gym_members.dni',
-                'gym_members.branch_id',
-                'gym_payments.id as payment_id',
-                'gym_payments.receipt_number as payment_receipt_number',
-                'gym_payments.amount as payment_amount',
-                'gym_payments.method as payment_method_recorded',
-                'gym_payments.status as payment_status',
-                'gym_payments.paid_on as payment_paid_on',
-                'gym_payments.proof_path as payment_proof_path'
-            )
+            ->select($select)
             ->orderByDesc('gym_training_subscriptions.id');
 
         $this->scopeBranches($query, $request, 'gym_training_subscriptions', 'gym_members.branch_id');
@@ -1740,6 +1745,7 @@ class GymController extends Controller
                 $subscription->day_schedules = json_decode((string) ($subscription->day_schedules ?? ''), true) ?: [];
                 $proofPath = $subscription->payment_proof_path ?: $subscription->proof_path;
                 $subscription->proof_url = $proofPath ? Storage::disk('public')->url($proofPath) : null;
+                $subscription->payment_methods = $this->decodePaymentMethodsColumn($subscription->payment_methods ?? null);
 
                 return $subscription;
             })
@@ -1760,11 +1766,16 @@ class GymController extends Controller
         abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
         $tenantId = $this->defaultTenantId($request);
         $this->abortIfDuplicateTrainingSubscription($tenantId, (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules);
-        $proofPath = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
+        $paymentMethods = $this->parsePaymentMethodsInput($request, (float) $data['monthly_fee'], 'payment_method');
+        $data['payment_method'] = $this->primaryPaymentMethodFromSplits($paymentMethods);
+        $proofPath = $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
             ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public')
             : null;
+        if ($this->paymentMethodsRequireProof($paymentMethods)) {
+            abort_unless($request->hasFile('proof_photo'), 422, 'Adjunte el comprobante de pago para medios distintos a efectivo.');
+        }
 
-        return DB::transaction(function () use ($request, $data, $tenantId, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath): JsonResponse {
+        return DB::transaction(function () use ($request, $data, $tenantId, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath, $paymentMethods): JsonResponse {
             $id = DB::table('gym_training_subscriptions')->insertGetId([
                 'tenant_id' => $tenantId,
                 'member_id' => $data['member_id'],
@@ -1785,7 +1796,7 @@ class GymController extends Controller
                 'updated_at' => now(),
             ]);
 
-            $paymentId = DB::table('gym_payments')->insertGetId([
+            $paymentRow = [
                 'tenant_id' => $tenantId,
                 'branch_id' => $this->branchIdForWrite($request, $this->memberBranchId((int) $data['member_id'])),
                 'member_id' => $data['member_id'],
@@ -1793,7 +1804,6 @@ class GymController extends Controller
                 'receipt_number' => $this->nextPaymentReceiptNumber(),
                 'amount' => $data['monthly_fee'],
                 'amount_paid' => $data['monthly_fee'],
-                'method' => $data['payment_method'],
                 'proof_path' => $proofPath,
                 'status' => 'paid',
                 'paid_on' => now()->toDateString(),
@@ -1801,7 +1811,9 @@ class GymController extends Controller
                 'registered_by' => $request->user()?->id,
                 'created_at' => now(),
                 'updated_at' => now(),
-            ]);
+            ];
+            $this->applyPaymentMethodsToPaymentRow($paymentRow, $paymentMethods);
+            $paymentId = DB::table('gym_payments')->insertGetId($paymentRow);
 
             return response()->json(['subscription_id' => $id, 'payment_id' => $paymentId], 201);
         });
@@ -1816,9 +1828,14 @@ class GymController extends Controller
         $current = $this->scopeTenant(DB::table('gym_training_subscriptions')->where('id', $subscription), $request, 'gym_training_subscriptions')->first();
         abort_unless($current !== null, 404, 'Mensualidad no encontrada.');
 
-        $proofPath = $data['payment_method'] === 'cash'
-            ? null
-            : ($request->hasFile('proof_photo') ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public') : $current->proof_path);
+        $paymentMethods = $this->parsePaymentMethodsInput($request, (float) $data['monthly_fee'], 'payment_method');
+        $data['payment_method'] = $this->primaryPaymentMethodFromSplits($paymentMethods);
+        $proofPath = $this->paymentMethodsRequireProof($paymentMethods)
+            ? ($request->hasFile('proof_photo') ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public') : $current->proof_path)
+            : null;
+        if ($this->paymentMethodsRequireProof($paymentMethods) && ! $request->hasFile('proof_photo') && ! $current->proof_path) {
+            abort(422, 'Adjunte el comprobante de pago para medios distintos a efectivo.');
+        }
 
         $payload = [
             'member_id' => $data['member_id'],
@@ -1844,13 +1861,14 @@ class GymController extends Controller
             'member_id' => $data['member_id'],
             'training_subscription_id' => $subscription,
             'amount' => $data['monthly_fee'],
-            'method' => $data['payment_method'],
+            'amount_paid' => $data['monthly_fee'],
             'proof_path' => $proofPath,
             'status' => ($data['status'] ?? 'active') === 'cancelled' ? 'annulled' : 'paid',
             'notes' => 'Pago de mensualidad de clases',
             'registered_by' => $request->user()?->id,
             'updated_at' => now(),
         ];
+        $this->applyPaymentMethodsToPaymentRow($paymentPayload, $paymentMethods);
 
         $payment = DB::table('gym_payments')->where('training_subscription_id', $subscription)->first();
         if ($payment) {
@@ -1897,7 +1915,8 @@ class GymController extends Controller
             'selected_days.*' => ['required', Rule::in(['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'])],
             'sessions_per_week' => ['required', 'integer', 'min:1', 'max:7'],
             'day_schedules' => ['required', 'json'],
-            'payment_method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+            'payment_method' => ['nullable', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin', 'mixed'])],
+            'payment_methods' => ['nullable'],
             'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
             'status' => ['nullable', Rule::in(['active', 'inactive', 'cancelled', 'expired'])],
             'notes' => ['nullable', 'string'],

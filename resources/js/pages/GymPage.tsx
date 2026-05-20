@@ -176,6 +176,7 @@ const emptyTrainingSubscriptionForm = {
   preferred_time: "19:00",
   sessions_per_week: "3",
   payment_method: "cash",
+  payment_methods: defaultPaymentMethods("180"),
   proof_photo: null,
   notes: "",
 };
@@ -329,7 +330,7 @@ const cellTranslations: Record<string, Record<string, string>> = {
 function formatCell(column: string, value: unknown, row?: AnyRow) {
   if (column === "proof_url") return value ? <a className="font-bold text-blue-700 underline" href={String(value)} target="_blank" rel="noreferrer">Ver foto</a> : "-";
   if (["checked_in_at", "checked_out_at", "paid_on", "starts_on", "ends_on", "next_maintenance_on"].includes(column)) return formatDateTime(value);
-  if (column === "movement_date") return formatDateTime(value);
+  if (column === "movement_date") return formatMovementDateTime(row?.movement_at ?? value);
   if (column === "method" || column === "payment_method") {
     return paymentMethodsLabel(value, row?.payment_methods, (code) => cellTranslations.method[code] ?? code);
   }
@@ -395,6 +396,46 @@ function formatDateTime(value: unknown) {
     month: "2-digit",
     year: "numeric",
     ...(hasTime ? { hour: "2-digit", minute: "2-digit" } : {}),
+  });
+}
+
+function formatDateRangeLabel(value: string) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const [year, month, day] = value.split("-");
+  return `${day}/${month}/${year}`;
+}
+
+function localDateKey(value: unknown) {
+  if (!value) return "";
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (match && !raw.includes("T")) return match[1];
+  const parsed = new Date(raw.includes("T") ? raw : raw.replace(" ", "T"));
+  if (Number.isNaN(parsed.getTime())) return match?.[1] ?? "";
+  return formatDateInput(parsed);
+}
+
+function formatMovementDateTime(value: unknown) {
+  if (!value) return "-";
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const date = new Date(`${raw}T12:00:00`);
+    return date.toLocaleDateString("es-PE", { day: "2-digit", month: "2-digit", year: "numeric" });
+  }
+  const parsed = new Date(raw.includes("T") ? raw : raw.replace(" ", "T"));
+  if (Number.isNaN(parsed.getTime())) return raw;
+  const hasTime = /\d{2}:\d{2}/.test(raw);
+  if (!hasTime && !raw.includes("T")) {
+    return parsed.toLocaleDateString("es-PE", { day: "2-digit", month: "2-digit", year: "numeric" });
+  }
+  return parsed.toLocaleString("es-PE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
   });
 }
 
@@ -567,7 +608,9 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
       membership_status: payment.membership_status,
       membership_price: payment.membership_price,
       membership_discount: payment.membership_discount,
-      movement_date: payment.paid_on ?? payment.due_on,
+      movement_day: payment.paid_on ?? payment.due_on,
+      movement_at: payment.created_at ?? payment.paid_on ?? payment.due_on,
+      movement_date: payment.created_at ?? payment.paid_on ?? payment.due_on,
       proof_url: payment.proof_url,
       status: payment.status,
       branch_name: payment.branch_name,
@@ -581,13 +624,15 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
       amount: -Number(expense.amount ?? 0),
       method: expense.payment_method,
       payment_methods: expense.payment_methods,
-      movement_date: expense.spent_on,
+      movement_day: expense.spent_on,
+      movement_at: expense.created_at ?? expense.spent_on,
+      movement_date: expense.created_at ?? expense.spent_on,
       proof_url: expense.proof_url,
       status: "paid",
       branch_name: expense.branch_name,
       branch_id: expense.branch_id,
     })),
-  ].sort((a, b) => String(b.movement_date ?? "").localeCompare(String(a.movement_date ?? "")));
+  ].sort((a, b) => String(b.movement_at ?? b.movement_date ?? "").localeCompare(String(a.movement_at ?? a.movement_date ?? "")));
 }
 
 function dateOnly(value: unknown) {
@@ -609,7 +654,7 @@ function currentMonthDateRange() {
 }
 
 function isWithinDateRange(value: unknown, from: string, to: string) {
-  const date = String(value ?? "").slice(0, 10);
+  const date = localDateKey(value);
   if (!date) return false;
   if (from && date < from) return false;
   if (to && date > to) return false;
@@ -1633,16 +1678,19 @@ export function GymPage() {
   }
 
   function openEditTrainingSubscription(subscription: AnyRow) {
+    const monthlyFee = String(subscription.monthly_fee ?? "");
+    const paymentLines = parsePaymentMethods(subscription.payment_methods);
     setEditingTrainingSubscriptionId(subscription.id);
     setTrainingSubscriptionForm({
       ...emptyTrainingSubscriptionForm,
       ...subscription,
       member_id: String(subscription.member_id ?? ""),
-      monthly_fee: String(subscription.monthly_fee ?? ""),
+      monthly_fee: monthlyFee,
       starts_on: String(subscription.starts_on ?? new Date().toISOString().slice(0, 10)),
       selected_days: subscription.selected_days ?? [],
       day_schedules: subscription.day_schedules ?? {},
       sessions_per_week: String(subscription.sessions_per_week ?? (subscription.selected_days?.length || 1)),
+      payment_methods: paymentLines.length > 0 ? paymentLines : defaultPaymentMethods(monthlyFee),
       proof_url: subscription.proof_url ?? "",
       proof_photo: null,
     });
@@ -1670,10 +1718,12 @@ export function GymPage() {
     if (trainingSubscriptionSaving) return;
     setErrorModal(null);
     setTrainingSubscriptionSaving(true);
+    const total = Number(trainingSubscriptionForm.monthly_fee || 0);
     const formData = new FormData();
     try {
+      normalizePaymentMethodLines(trainingSubscriptionForm.payment_methods ?? defaultPaymentMethods(String(total)), total);
       for (const [key, value] of Object.entries(trainingSubscriptionForm)) {
-        if (key === "proof_url" || (key.startsWith("payment_") && key !== "payment_method")) continue;
+        if (key === "proof_url" || key === "payment_methods" || key === "payment_method" || key === "method") continue;
         if (key === "selected_days" && Array.isArray(value)) {
           value.forEach((day) => formData.append("selected_days[]", day));
         } else if (key === "day_schedules") {
@@ -1682,6 +1732,7 @@ export function GymPage() {
           await appendFormValue(formData, key, value);
         }
       }
+      appendPaymentMethodsToFormData(formData, trainingSubscriptionForm.payment_methods ?? defaultPaymentMethods(String(total)), total);
       if (editingTrainingSubscriptionId) {
         formData.append("_method", "PUT");
         await httpClient.post(`/api/gym/training-subscriptions/${editingTrainingSubscriptionId}`, formData);
@@ -2052,7 +2103,7 @@ function CashMovementsPanel({ movements, filteredMovements, dateFrom, dateTo, pe
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-lg font-black">Movimientos de caja</h2>
-          <p className="mt-1 text-sm font-semibold text-zinc-500">Mostrando {filteredMovements.length} de {movements.length} registros · {formatDateTime(dateFrom)} al {formatDateTime(dateTo)}</p>
+          <p className="mt-1 text-sm font-semibold text-zinc-500">Mostrando {filteredMovements.length} de {movements.length} registros · {formatDateRangeLabel(dateFrom)} al {formatDateRangeLabel(dateTo)}</p>
         </div>
         <span className="shrink-0 self-start rounded-full bg-[#ffcc00] px-3 py-1 text-xs font-black text-zinc-950 sm:self-auto">{filteredMovements.length} registros</span>
       </div>
@@ -2095,7 +2146,7 @@ function FinanceModule({ movements, payments, expenses, onNewIncome, onNewExpens
   const accountsReceivable = receivables.reduce((sum, payment) => sum + Number(payment.balance_due ?? payment.amount ?? 0), 0);
   const courtesyAmount = branchScopedPayments.filter((payment) => payment.status === "courtesy").reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0);
   const filteredMovements = useMemo(
-    () => movements.filter((row) => isWithinDateRange(row.movement_date, dateFrom, dateTo)),
+    () => movements.filter((row) => isWithinDateRange(row.movement_day ?? row.movement_date, dateFrom, dateTo)),
     [movements, dateFrom, dateTo],
   );
   const periodIncome = filteredMovements.filter((row) => row.movement_type === "income").reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
@@ -2915,7 +2966,7 @@ function TrainingSubscriptionDetailModal({ subscription, onClose, onEdit }: { su
           <DetailItem label="Disciplina" value={subscription.discipline} />
           <DetailItem label="Vigencia" value={`${formatDateTime(subscription.starts_on)} - ${formatDateTime(subscription.ends_on)}`} />
           <DetailItem label="Días" value={Array.isArray(subscription.selected_days) ? subscription.selected_days.join(", ") : "-"} />
-          <DetailItem label="Medio de pago" value={cellTranslations.payment_method[String(paymentMethod)] ?? paymentMethod} />
+          <DetailItem label="Medio de pago" value={paymentMethodsLabel(paymentMethod, subscription.payment_methods, (code) => cellTranslations.payment_method[code] ?? code)} />
           <DetailItem label="Comprobante" value={subscription.payment_receipt_number ?? "Generado al registrar la mensualidad"} />
           <DetailItem label="Estado del pago" value={<StatusBadge value={String(subscription.payment_status ?? "paid")} />} />
         </div>
@@ -3062,7 +3113,7 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
             </div>
           ) : null}
         </div>
-        <PaymentFields method={form.payment_method ?? "cash"} file={form.proof_photo} existingProofUrl={form.proof_url} onMethodChange={(value) => onChange({ ...form, payment_method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <PaymentMethodsFields lines={form.payment_methods ?? defaultPaymentMethods(String(form.monthly_fee || ""))} totalAmount={form.monthly_fee} file={form.proof_photo} existingProofUrl={form.proof_url} onChange={(lines) => onChange({ ...form, payment_methods: lines })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
         <FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Registrar mensualidad"} />
       </form>
