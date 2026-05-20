@@ -2224,6 +2224,12 @@ class GymController extends Controller
         return response()->json($query->limit(80)->get()->map(function ($expense) {
             $expense->proof_url = $expense->proof_path ? Storage::disk('public')->url($expense->proof_path) : null;
             $expense->payment_methods = $this->decodePaymentMethodsColumn($expense->payment_methods ?? null);
+            if (! empty($expense->created_at)) {
+                $expense->created_at = $this->serializeGymTimestamp($expense->created_at);
+            }
+            if (! empty($expense->updated_at)) {
+                $expense->updated_at = $this->serializeGymTimestamp($expense->updated_at);
+            }
 
             return $expense;
         }));
@@ -2442,6 +2448,17 @@ class GymController extends Controller
         return $branchId ? (int) $branchId : null;
     }
 
+    private function serializeGymTimestamp(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return Carbon::parse((string) $value, 'UTC')
+            ->timezone(config('app.timezone', 'America/Lima'))
+            ->toIso8601String();
+    }
+
     private function enrichPayment(object $payment): object
     {
         $amount = (float) $payment->amount;
@@ -2453,6 +2470,12 @@ class GymController extends Controller
         $payment->proof_url = $payment->proof_path ? Storage::disk('public')->url($payment->proof_path) : null;
         $payment->payer_name = $payment->customer_name ?? ($payment->payer_display ?? $payment->member_name ?? null);
         $payment->payment_methods = $this->decodePaymentMethodsColumn($payment->payment_methods ?? null);
+        if (! empty($payment->created_at)) {
+            $payment->created_at = $this->serializeGymTimestamp($payment->created_at);
+        }
+        if (! empty($payment->updated_at)) {
+            $payment->updated_at = $this->serializeGymTimestamp($payment->updated_at);
+        }
 
         return $payment;
     }

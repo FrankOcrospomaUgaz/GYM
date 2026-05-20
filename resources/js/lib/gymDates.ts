@@ -16,7 +16,7 @@ export function parseGymInstant(value: unknown): Date | null {
     return Number.isNaN(date.getTime()) ? null : date;
   }
   const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
-  const date = new Date(`${normalized}-05:00`);
+  const date = new Date(`${normalized}Z`);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
