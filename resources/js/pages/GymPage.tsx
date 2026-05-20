@@ -1,10 +1,11 @@
-﻿import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit3, Eye, IdCard, LayoutDashboard, LogOut, Menu, MessageCircle, PackageCheck, Plus, QrCode, Search, ShieldCheck, Trash2, Trophy, Users, X } from "lucide-react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit3, Eye, IdCard, LayoutDashboard, LogOut, Menu, MessageCircle, PackageCheck, Plus, QrCode, RefreshCw, Search, ShieldCheck, Trash2, Trophy, Users, X } from "lucide-react";
 import { httpClient } from "../http/client";
 import { parseApiError, registerHttpErrorHandlers } from "../http/api-errors";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { PaymentMethodsFields } from "../components/PaymentMethodsFields";
 import { appendPaymentMethodsToFormData, defaultPaymentMethods, normalizePaymentMethodLines, parsePaymentMethods, paymentMethodsLabel } from "../lib/paymentMethods";
+import { showToast, type ToastIcon } from "../lib/toast";
 import {
   branchOptions,
   categoryOptions,
@@ -611,6 +612,35 @@ function membershipStatusForDisplay(row?: AnyRow) {
   return "active";
 }
 
+function membershipCanRenew(row: AnyRow) {
+  const dbStatus = String(row.status ?? "");
+  if (dbStatus === "cancelled" || dbStatus === "replaced") return false;
+  return membershipStatusForDisplay(row) === "expired";
+}
+
+function defaultSaleForm(overrides: AnyRow = {}): AnyRow {
+  return {
+    member_id: "",
+    plan_id: "",
+    starts_on: new Date().toISOString().slice(0, 10),
+    discount: "0",
+    method: "cash",
+    payment_methods: defaultPaymentMethods(),
+    status: "paid",
+    due_on: "",
+    proof_photo: null,
+    notes: "",
+    ...overrides,
+  };
+}
+
+function renewStartsOn(endsOn: unknown) {
+  const today = new Date().toISOString().slice(0, 10);
+  const end = String(endsOn ?? "").slice(0, 10);
+  if (!end || end < today) return today;
+  return today;
+}
+
 function memberActiveMembership(member: AnyRow, memberships: AnyRow[]) {
   return memberships
     .filter((membership) => Number(membership.member_id) === Number(member.id) && membershipEffectiveStatus(membership) === "active")
@@ -653,7 +683,8 @@ export function GymPage() {
   const [equipmentForm, setEquipmentForm] = useState<AnyRow>(emptyEquipment);
   const [productForm, setProductForm] = useState<AnyRow>(emptyProduct);
   const [productSaleForm, setProductSaleForm] = useState<AnyRow>(emptyProductSale);
-  const [saleForm, setSaleForm] = useState<AnyRow>({ member_id: "", plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", payment_methods: defaultPaymentMethods(), status: "paid", due_on: "", proof_photo: null, notes: "" });
+  const [saleForm, setSaleForm] = useState<AnyRow>(() => defaultSaleForm());
+  const [renewingMembership, setRenewingMembership] = useState<AnyRow | null>(null);
   const [incomeForm, setIncomeForm] = useState<AnyRow>({ category: "Venta externa", concept: "", payer_name: "", branch_id: "", amount: "", paid_on: new Date().toISOString().slice(0, 10), due_on: "", method: "cash", payment_methods: defaultPaymentMethods(), status: "paid", proof_photo: null, notes: "" });
   const [membershipEditModalOpen, setMembershipEditModalOpen] = useState(false);
   const [membershipEditForm, setMembershipEditForm] = useState<AnyRow>(emptyMembershipEdit);
@@ -707,7 +738,7 @@ export function GymPage() {
   const silentRequest = { skipGlobalErrorHandler: true };
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [browserNotificationsEnabled, setBrowserNotificationsEnabled] = useState(() => typeof Notification !== "undefined" && Notification.permission === "granted");
-  const [message, setMessage] = useState("");
+  const notify = useCallback((text: string, icon: ToastIcon = "success") => showToast(text, icon), []);
   const [search, setSearch] = useState("");
   const [memberSearch, setMemberSearch] = useState("");
 
@@ -859,7 +890,10 @@ export function GymPage() {
     }
     const permission = await Notification.requestPermission();
     setBrowserNotificationsEnabled(permission === "granted");
-    setMessage(permission === "granted" ? "Notificaciones del navegador activadas." : "No se activaron las notificaciones del navegador.");
+    notify(
+      permission === "granted" ? "Notificaciones del navegador activadas." : "No se activaron las notificaciones del navegador.",
+      permission === "granted" ? "success" : "warning",
+    );
   }
 
   async function markNotificationsAsRead() {
@@ -884,7 +918,8 @@ export function GymPage() {
 
   async function openMemberMemberships(member: AnyRow) {
     setSelectedMember(member);
-    setSaleForm({ member_id: String(member.id), plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", proof_photo: null, notes: "" });
+    setRenewingMembership(null);
+    setSaleForm(defaultSaleForm({ member_id: String(member.id) }));
     const response = await httpClient.get(`/api/gym/members/${member.id}/memberships`);
     setMemberMemberships(response.data);
     setMemberMembershipModalOpen(true);
@@ -913,17 +948,16 @@ export function GymPage() {
 
   async function saveMember(event: FormEvent) {
     event.preventDefault();
-    setMessage("");
     const payload = { ...memberForm, document_number: memberForm.dni, branch_id: memberForm.branch_id || null };
     let savedMember: AnyRow | null = null;
     if (editingMemberId) {
       const response = await httpClient.put(`/api/gym/members/${editingMemberId}`, payload);
       savedMember = response.data;
-      setMessage("Socio actualizado correctamente.");
+      notify("Socio actualizado correctamente.");
     } else {
       const response = await httpClient.post("/api/gym/members", payload);
       savedMember = response.data;
-      setMessage("Socio registrado correctamente.");
+      notify("Socio registrado correctamente.");
     }
     setMemberModalOpen(false);
     await loadAll();
@@ -938,7 +972,7 @@ export function GymPage() {
   async function lookupDni(dni: string) {
     const cleanDni = String(dni || "").trim();
     if (!/^\d{8}$/.test(cleanDni)) {
-      setMessage("Ingrese un DNI válido de 8 dígitos.");
+      notify("Ingrese un DNI válido de 8 dígitos.", "warning");
       return;
     }
 
@@ -953,7 +987,7 @@ export function GymPage() {
       birthdate: payload?.fecha_nacimiento || current.birthdate || "",
       gender: payload?.genero || current.gender || "",
     }));
-    setMessage("Datos RENIEC cargados correctamente.");
+    notify("Datos RENIEC cargados correctamente.");
   }
 
   function confirmDeleteMember(member: AnyRow) {
@@ -962,10 +996,37 @@ export function GymPage() {
       body: `¿Deseas eliminar o desactivar a ${member.first_name} ${member.last_name}? Si tiene historial, se conservará y quedará inactivo.`,
       onConfirm: async () => {
         const response = await httpClient.delete(`/api/gym/members/${member.id}`);
-        setMessage(response.data?.message ?? "Socio eliminado correctamente.");
+        notify(response.data?.message ?? "Socio eliminado correctamente.");
         await loadAll();
       },
     });
+  }
+
+  function openNewSale() {
+    setRenewingMembership(null);
+    setSaleForm(defaultSaleForm());
+    setSaleModalOpen(true);
+  }
+
+  function closeSaleModal() {
+    setSaleModalOpen(false);
+    setRenewingMembership(null);
+    setSaleForm(defaultSaleForm());
+  }
+
+  function openRenewMembership(membership: AnyRow) {
+    setMemberMembershipModalOpen(false);
+    setRenewingMembership(membership);
+    setSaleForm(
+      defaultSaleForm({
+        member_id: String(membership.member_id ?? ""),
+        plan_id: String(membership.plan_id ?? ""),
+        starts_on: renewStartsOn(membership.ends_on),
+        discount: String(membership.discount ?? "0"),
+        notes: "Renovación de membresía",
+      }),
+    );
+    setSaleModalOpen(true);
   }
 
   function openEditMembership(membership: AnyRow) {
@@ -986,7 +1047,7 @@ export function GymPage() {
     await httpClient.put(`/api/gym/memberships/${editingMembershipId}`, membershipEditForm);
     setMembershipEditModalOpen(false);
     setEditingMembershipId(null);
-    setMessage("Membresía actualizada correctamente.");
+    notify("Membresía actualizada correctamente.");
     await loadAll();
   }
 
@@ -1002,7 +1063,7 @@ export function GymPage() {
     const memberLabel = membership.member_name ?? "el socio";
     const cancelMembership = async (force = false) => {
       const response = await httpClient.delete(`/api/gym/memberships/${membership.id}`, { params: force ? { force: true } : {} });
-      setMessage(response.data?.message ?? "Membresía cancelada correctamente.");
+      notify(response.data?.message ?? "Membresía cancelada correctamente.");
       if (memberMembershipModalOpen && selectedMember && Number(selectedMember.id) === Number(membership.member_id)) {
         const history = await httpClient.get(`/api/gym/members/${selectedMember.id}/memberships`);
         setMemberMemberships(history.data);
@@ -1060,7 +1121,6 @@ export function GymPage() {
 
   async function savePlan(event: FormEvent) {
     event.preventDefault();
-    setMessage("");
     const payload = {
       ...planForm,
       code: String(planForm.code).trim().toUpperCase(),
@@ -1074,10 +1134,10 @@ export function GymPage() {
     };
     if (editingPlanId) {
       await httpClient.put(`/api/gym/plans/${editingPlanId}`, payload);
-      setMessage("Plan actualizado correctamente.");
+      notify("Plan actualizado correctamente.");
     } else {
       await httpClient.post("/api/gym/plans", payload);
-      setMessage("Plan creado correctamente.");
+      notify("Plan creado correctamente.");
     }
     setPlanModalOpen(false);
     await loadAll();
@@ -1089,7 +1149,7 @@ export function GymPage() {
       body: `¿Eliminar el ingreso de ${record.member_name ?? "este socio"} del ${formatDateTime(record.checked_in_at)}?`,
       onConfirm: async () => {
         const response = await httpClient.delete(`/api/gym/attendance/${record.id}`);
-        setMessage(response.data?.message ?? "Acceso eliminado correctamente.");
+        notify(response.data?.message ?? "Acceso eliminado correctamente.");
         await loadAll();
       },
     });
@@ -1101,7 +1161,7 @@ export function GymPage() {
       body: `¿Deseas eliminar o desactivar el plan "${plan.name}"? Si tiene ventas asociadas, se desactivará para conservar histórico.`,
       onConfirm: async () => {
         const response = await httpClient.delete(`/api/gym/plans/${plan.id}`);
-        setMessage(response.data?.message ?? "Plan eliminado correctamente.");
+        notify(response.data?.message ?? "Plan eliminado correctamente.");
         await loadAll();
       },
     });
@@ -1132,10 +1192,10 @@ export function GymPage() {
     const payload = { ...equipmentForm, branch_id: equipmentForm.branch_id || null };
     if (editingEquipmentId) {
       await httpClient.put(`/api/gym/equipment/${editingEquipmentId}`, payload);
-      setMessage("Equipo actualizado correctamente.");
+      notify("Equipo actualizado correctamente.");
     } else {
       await httpClient.post("/api/gym/equipment", payload);
-      setMessage("Equipo registrado correctamente.");
+      notify("Equipo registrado correctamente.");
     }
     setEquipmentModalOpen(false);
     setEditingEquipmentId(null);
@@ -1148,7 +1208,7 @@ export function GymPage() {
       body: `¿Deseas eliminar "${item.name}" del inventario?`,
       onConfirm: async () => {
         const response = await httpClient.delete(`/api/gym/equipment/${item.id}`);
-        setMessage(response.data?.message ?? "Equipo eliminado correctamente.");
+        notify(response.data?.message ?? "Equipo eliminado correctamente.");
         await loadAll();
       },
     });
@@ -1178,7 +1238,6 @@ export function GymPage() {
 
   async function saveProduct(event: FormEvent) {
     event.preventDefault();
-    setMessage("");
     const payload = {
       ...productForm,
       stock: Number(productForm.stock),
@@ -1191,10 +1250,10 @@ export function GymPage() {
 
     if (selectedProduct?.id) {
       await httpClient.put(`/api/gym/products/${selectedProduct.id}`, payload);
-      setMessage("Producto actualizado correctamente.");
+      notify("Producto actualizado correctamente.");
     } else {
       await httpClient.post("/api/gym/products", payload);
-      setMessage("Producto registrado correctamente.");
+      notify("Producto registrado correctamente.");
     }
 
     setProductModalOpen(false);
@@ -1208,7 +1267,7 @@ export function GymPage() {
       body: `¿Deseas eliminar o desactivar el producto "${item.name}"? Si tiene ventas o movimientos, se conservará y quedará inactivo.`,
       onConfirm: async () => {
         const response = await httpClient.delete(`/api/gym/products/${item.id}`);
-        setMessage(response.data?.message ?? "Producto eliminado correctamente.");
+        notify(response.data?.message ?? "Producto eliminado correctamente.");
         await loadAll();
       },
     });
@@ -1228,13 +1287,12 @@ export function GymPage() {
 
   async function saveProductSale(event: FormEvent) {
     event.preventDefault();
-    setMessage("");
     setErrorModal(null);
     try {
       const formData = new FormData();
       for (const [key, value] of Object.entries(productSaleForm)) await appendFormValue(formData, key, value);
       await httpClient.post("/api/gym/product-sales", formData, { errorTitle: "No se pudo registrar la venta" });
-      setMessage("Venta de producto registrada correctamente.");
+      notify("Venta de producto registrada correctamente.");
       setProductSaleModalOpen(false);
       setSelectedProduct(null);
       await loadAll();
@@ -1256,7 +1314,6 @@ export function GymPage() {
   async function saveStockPurchase(event: FormEvent) {
     event.preventDefault();
     if (!selectedProduct?.id) return;
-    setMessage("");
     await httpClient.post(`/api/gym/products/${selectedProduct.id}/stock-purchase`, {
       quantity: Number(stockPurchaseForm.quantity),
       unit_cost: Number(stockPurchaseForm.unit_cost),
@@ -1265,7 +1322,7 @@ export function GymPage() {
     });
     setStockPurchaseModalOpen(false);
     setSelectedProduct(null);
-    setMessage("Ingreso de mercadería registrado.");
+    notify("Ingreso de mercadería registrado.");
     await loadAll();
   }
 
@@ -1284,7 +1341,6 @@ export function GymPage() {
 
   async function saveCollectPayment(event: FormEvent) {
     event.preventDefault();
-    setMessage("");
     const formData = new FormData();
     const total = Number(collectPaymentForm.amount || 0);
     normalizePaymentMethodLines(collectPaymentForm.payment_methods ?? defaultPaymentMethods(), total);
@@ -1296,7 +1352,7 @@ export function GymPage() {
     await httpClient.post(`/api/gym/payments/${collectPaymentForm.payment_id}/collect`, formData);
     setCollectPaymentModalOpen(false);
     setSelectedReceivable(null);
-    setMessage("Cobro registrado correctamente.");
+    notify("Cobro registrado correctamente.");
     await loadAll();
   }
 
@@ -1309,26 +1365,25 @@ export function GymPage() {
 
   async function sellMembership(event: FormEvent) {
     event.preventDefault();
-    setMessage("");
+    const wasRenew = Boolean(renewingMembership);
     const selectedPlan = plans.find((plan) => String(plan.id) === String(saleForm.plan_id));
     const saleTotal = Math.max(0, Number(selectedPlan?.price ?? 0) - Number(saleForm.discount ?? 0));
     const formData = new FormData();
     normalizePaymentMethodLines(saleForm.payment_methods ?? defaultPaymentMethods(), saleTotal);
     await appendFinanceFormData(formData, saleForm, saleTotal);
     await httpClient.post("/api/gym/memberships", formData);
-    setSaleModalOpen(false);
+    closeSaleModal();
     if (memberMembershipModalOpen && selectedMember) {
       const response = await httpClient.get(`/api/gym/members/${selectedMember.id}/memberships`);
       setMemberMemberships(response.data);
     }
-    setMessage("Membresía vendida y pago registrado.");
+    notify(wasRenew ? "Membresía renovada y pago registrado." : "Membresía vendida y pago registrado.");
     await loadAll();
   }
 
   async function checkIn(memberId: number) {
-    setMessage("");
     await httpClient.post("/api/gym/attendance/check-in", { member_id: memberId });
-    setMessage("Ingreso registrado.");
+    notify("Ingreso registrado.");
     await loadAll();
   }
 
@@ -1340,7 +1395,7 @@ export function GymPage() {
     await httpClient.post("/api/gym/expenses", formData);
     setExpenseForm({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", payment_methods: defaultPaymentMethods(), proof_photo: null });
     setExpenseModalOpen(false);
-    setMessage("Gasto registrado.");
+    notify("Gasto registrado.");
     await loadAll();
   }
 
@@ -1352,7 +1407,7 @@ export function GymPage() {
     await httpClient.post("/api/gym/payments", formData);
     setIncomeForm({ category: "Venta externa", concept: "", payer_name: "", branch_id: defaultBranchId(user, branches), amount: "", paid_on: new Date().toISOString().slice(0, 10), due_on: "", method: "cash", payment_methods: defaultPaymentMethods(), status: "paid", proof_photo: null, notes: "" });
     setIncomeModalOpen(false);
-    setMessage("Ingreso externo registrado.");
+    notify("Ingreso externo registrado.");
     await loadAll();
   }
 
@@ -1393,10 +1448,10 @@ export function GymPage() {
     };
     if (editingClassId) {
       await httpClient.put(`/api/gym/classes/${editingClassId}`, payload);
-      setMessage("Clase actualizada correctamente.");
+      notify("Clase actualizada correctamente.");
     } else {
       await httpClient.post("/api/gym/classes", payload);
-      setMessage("Clase creada correctamente.");
+      notify("Clase creada correctamente.");
     }
     setClassModalOpen(false);
     await loadAll();
@@ -1408,7 +1463,7 @@ export function GymPage() {
       body: `¿Deseas eliminar o desactivar "${gymClass.name}"? Si tiene reservas, se desactivará para conservar histórico.`,
       onConfirm: async () => {
         const response = await httpClient.delete(`/api/gym/classes/${gymClass.id}`);
-        setMessage(response.data?.message ?? "Clase eliminada correctamente.");
+        notify(response.data?.message ?? "Clase eliminada correctamente.");
         await loadAll();
       },
     });
@@ -1486,7 +1541,7 @@ export function GymPage() {
       body: `¿Deseas cancelar la mensualidad de ${subscription.member_name}? Se conservará el histórico.`,
       onConfirm: async () => {
         const response = await httpClient.delete(`/api/gym/training-subscriptions/${subscription.id}`);
-        setMessage(response.data?.message ?? "Mensualidad cancelada correctamente.");
+        notify(response.data?.message ?? "Mensualidad cancelada correctamente.");
         await loadAll();
       },
     });
@@ -1495,7 +1550,6 @@ export function GymPage() {
   async function saveTrainingSubscription(event: FormEvent) {
     event.preventDefault();
     if (trainingSubscriptionSaving) return;
-    setMessage("");
     setErrorModal(null);
     setTrainingSubscriptionSaving(true);
     const formData = new FormData();
@@ -1519,7 +1573,7 @@ export function GymPage() {
       setEditingTrainingSubscriptionId(null);
       setTrainingSubscriptionModalOpen(false);
       setClassesViewMode("tabla");
-      setMessage(editingTrainingSubscriptionId ? "Mensualidad actualizada correctamente." : "Mensualidad registrada correctamente.");
+      notify(editingTrainingSubscriptionId ? "Mensualidad actualizada correctamente." : "Mensualidad registrada correctamente.");
       await loadAll();
     } catch (error) {
       const friendly = parseApiError(
@@ -1583,7 +1637,6 @@ export function GymPage() {
               {notificationPanelOpen ? <NotificationPanel notifications={notifications} browserEnabled={browserNotificationsEnabled} onEnableBrowser={() => void enableBrowserNotifications()} onMarkRead={() => void markNotificationsAsRead()} onClose={() => setNotificationPanelOpen(false)} /> : null}
             </div>
           </div>
-          {message ? <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-700">{message}</div> : null}
         </header>
 
         <section className="space-y-5 p-3 sm:p-4 lg:space-y-6 lg:p-8">
@@ -1605,20 +1658,20 @@ export function GymPage() {
             </div>
           </Module> : null}
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
-          {tab === "memberships" ? <MembershipsModule rows={memberships} branches={branches} plans={plans} onNew={() => setSaleModalOpen(true)} onEdit={openEditMembership} onDelete={confirmDeleteMembership} /> : null}
+          {tab === "memberships" ? <MembershipsModule rows={memberships} branches={branches} plans={plans} onNew={openNewSale} onRenew={openRenewMembership} onEdit={openEditMembership} onDelete={confirmDeleteMembership} /> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} action={(row) => <ActionButtons onDelete={() => confirmDeleteAttendance(row)} />} /></Module> : null}
           {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} /> : null}
           {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); setProductSaleForm({ ...emptyProductSale, sale_date: new Date().toISOString().slice(0, 10) }); setProductSaleModalOpen(true); }} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos." onNew={openNewEquipment} newLabel="Nuevo equipo"><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} action={(row) => <ActionButtons onEdit={() => openEditEquipment(row)} onDelete={() => confirmDeleteEquipment(row)} />} /></Module> : null}
           {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} branches={branches} branchFilter={financeBranchFilter} onBranchFilterChange={setFinanceBranchFilter} onNewIncome={() => { setIncomeForm((current) => ({ ...current, branch_id: defaultBranchId(user, branches), payment_methods: defaultPaymentMethods(String(current.amount || "")) })); setIncomeModalOpen(true); }} onNewExpense={() => setExpenseModalOpen(true)} onCollectPayment={openCollectPayment} onViewMembership={openMembershipFromCash} /> : null}
-          {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} onNotify={setMessage} /> : null}
+          {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} onNotify={notify} /> : null}
         </section>
       </main>
 
       <BottomNav tab={tab} onSelect={selectTab} tabs={visibleTabs.filter((item) => item.id !== "system")} />
       <PlanModal open={planModalOpen} editing={Boolean(editingPlanId)} form={planForm} onChange={setPlanForm} onClose={() => setPlanModalOpen(false)} onSubmit={savePlan} />
-      <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} onChange={setSaleForm} onClose={() => setSaleModalOpen(false)} onSubmit={sellMembership} />
-      <MemberMembershipModal open={memberMembershipModalOpen} member={selectedMember} rows={memberMemberships} saleForm={saleForm} plans={plans} onSaleChange={setSaleForm} onClose={() => setMemberMembershipModalOpen(false)} onSubmit={sellMembership} onDeleteMembership={confirmDeleteMembership} onEditMembership={openEditMembership} />
+      <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} renewFrom={renewingMembership} onChange={setSaleForm} onClose={closeSaleModal} onSubmit={sellMembership} />
+      <MemberMembershipModal open={memberMembershipModalOpen} member={selectedMember} rows={memberMemberships} saleForm={saleForm} plans={plans} onSaleChange={setSaleForm} onClose={() => setMemberMembershipModalOpen(false)} onSubmit={sellMembership} onDeleteMembership={confirmDeleteMembership} onEditMembership={openEditMembership} onRenew={openRenewMembership} />
       <EditMembershipModal open={membershipEditModalOpen} form={membershipEditForm} plans={plans} onChange={setMembershipEditForm} onClose={() => { setMembershipEditModalOpen(false); setEditingMembershipId(null); }} onSubmit={saveMembershipEdit} />
       <MembershipDetailModal open={membershipViewOpen} membership={membershipViewData} onClose={() => { setMembershipViewOpen(false); setMembershipViewData(null); }} />
       <IncomeModal open={incomeModalOpen} form={incomeForm} branches={branches} onChange={setIncomeForm} onClose={() => setIncomeModalOpen(false)} onSubmit={saveExternalIncome} />
@@ -1785,7 +1838,7 @@ function Module({ title, subtitle, children, onNew, newLabel }: { title: string;
   );
 }
 
-function MembershipsModule({ rows, branches, plans, onNew, onEdit, onDelete }: { rows: AnyRow[]; branches: AnyRow[]; plans: AnyRow[]; onNew: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void }) {
+function MembershipsModule({ rows, branches, plans, onNew, onRenew, onEdit, onDelete }: { rows: AnyRow[]; branches: AnyRow[]; plans: AnyRow[]; onNew: () => void; onRenew: (row: AnyRow) => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void }) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [branchFilter, setBranchFilter] = useState("");
@@ -1843,7 +1896,7 @@ function MembershipsModule({ rows, branches, plans, onNew, onEdit, onDelete }: {
         </label>
       </div>
       <p className="mb-3 text-sm font-semibold text-zinc-500">Mostrando {filteredRows.length} de {rows.length} membresías</p>
-      <DataTable title="Membresías activadas" rows={filteredRows} columns={["member_name", "plan_name", "branch_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
+      <DataTable title="Membresías activadas" rows={filteredRows} columns={["member_name", "plan_name", "branch_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} extra={membershipCanRenew(row) ? <IconButton title="Renovar membresía" onClick={() => onRenew(row)} className="bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"><RefreshCw className="h-4 w-4" /></IconButton> : null} />} />
     </Module>
   );
 }
@@ -2117,15 +2170,31 @@ function PlanModal({ open, editing, form, onChange, onClose, onSubmit }: { open:
   return <Modal open={open} title={editing ? "Editar plan" : "Nuevo plan"} subtitle="Configura precio, vigencia, acceso y beneficios." onClose={onClose}><form onSubmit={onSubmit} className="space-y-4"><div className="grid gap-3 sm:grid-cols-2"><Field label="Nombre" value={form.name} onChange={(value) => onChange({ ...form, name: value })} required /><Field label="Código" value={form.code} onChange={(value) => onChange({ ...form, code: value })} required /><Field label="Precio" type="number" value={form.price} onChange={(value) => onChange({ ...form, price: value })} required /><Field label="Duración en días" type="number" value={form.duration_days} onChange={(value) => onChange({ ...form, duration_days: value })} required /><Field label="Días de gracia" type="number" value={form.grace_days} onChange={(value) => onChange({ ...form, grace_days: value })} required /><Field label="Accesos diarios" type="number" value={form.daily_access_limit} onChange={(value) => onChange({ ...form, daily_access_limit: value })} /></div><div className="grid gap-3 rounded-2xl bg-zinc-50 p-4 text-sm font-bold"><label className="flex items-center gap-2"><input type="checkbox" checked={form.includes_classes} onChange={(event) => onChange({ ...form, includes_classes: event.target.checked })} /> Incluye clases grupales</label><label className="flex items-center gap-2"><input type="checkbox" checked={form.includes_trainer} onChange={(event) => onChange({ ...form, includes_trainer: event.target.checked })} /> Incluye entrenador</label><label className="flex items-center gap-2"><input type="checkbox" checked={form.is_active} onChange={(event) => onChange({ ...form, is_active: event.target.checked })} /> Activo para ventas</label></div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Descripción<textarea value={form.description ?? ""} onChange={(event) => onChange({ ...form, description: event.target.value })} className={fieldClass("min-h-24")} /></label><FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Crear plan"} /></form></Modal>;
 }
 
-function SaleModal({ open, form, members, plans, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; plans: AnyRow[]; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-  return <Modal open={open} title="Nueva venta" subtitle="Activa una membresía y registra el pago." onClose={onClose}><form onSubmit={onSubmit} className="space-y-3"><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><SearchableSelect required value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members)} emptyOption={{ value: "", label: "Seleccione socio" }} className={fieldClass("w-full")} /></label><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Plan</RequiredLabel><SearchableSelect required value={String(form.plan_id ?? "")} onChange={(value) => onChange({ ...form, plan_id: value })} options={planOptions(plans, money)} emptyOption={{ value: "", label: "Seleccione plan" }} className={fieldClass("w-full")} /></label><div className="grid gap-3 sm:grid-cols-2"><Field label="Fecha de inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required /><Field label="Descuento" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} /></div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<SearchableSelect value={form.status ?? "paid"} onChange={(value) => onChange({ ...form, status: value })} options={paymentStatusOptions} className={fieldClass("w-full")} /></label>{form.status === "credit" ? <Field label="Vence el" type="date" value={form.due_on ?? ""} onChange={(value) => onChange({ ...form, due_on: value })} /> : null}<PaymentMethodsFields lines={form.payment_methods ?? defaultPaymentMethods()} totalAmount={Math.max(0, Number(plans.find((plan) => String(plan.id) === String(form.plan_id))?.price ?? 0) - Number(form.discount ?? 0))} file={form.proof_photo} onChange={(lines) => onChange({ ...form, payment_methods: lines })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} /><FormActions onClose={onClose} submitLabel="Cobrar y activar" /></form></Modal>;
+function SaleModal({ open, form, members, plans, renewFrom, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; plans: AnyRow[]; renewFrom?: AnyRow | null; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  const isRenew = Boolean(renewFrom);
+  const saleTotal = Math.max(0, Number(plans.find((plan) => String(plan.id) === String(form.plan_id))?.price ?? 0) - Number(form.discount ?? 0));
+  return (
+    <Modal open={open} title={isRenew ? "Renovar membresía" : "Nueva venta"} subtitle={isRenew ? `Renueva a ${renewFrom?.member_name ?? "el socio"} · venció el ${formatDateTime(renewFrom?.ends_on)}` : "Activa una membresía y registra el pago."} onClose={onClose}>
+      <form onSubmit={onSubmit} className="space-y-3">
+        {isRenew ? <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">El plan <span className="font-black">{renewFrom?.plan_name}</span> viene preseleccionado. Puedes cambiarlo, ajustar el pago y registrar la renovación.</div> : null}
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><SearchableSelect required disabled={isRenew} value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members)} emptyOption={{ value: "", label: "Seleccione socio" }} className={fieldClass("w-full")} /></label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Plan</RequiredLabel><SearchableSelect required value={String(form.plan_id ?? "")} onChange={(value) => onChange({ ...form, plan_id: value })} options={planOptions(plans, money)} emptyOption={{ value: "", label: "Seleccione plan" }} className={fieldClass("w-full")} /></label>
+        <div className="grid gap-3 sm:grid-cols-2"><Field label="Fecha de inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required /><Field label="Descuento" type="number" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} /></div>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<SearchableSelect value={form.status ?? "paid"} onChange={(value) => onChange({ ...form, status: value })} options={paymentStatusOptions} className={fieldClass("w-full")} /></label>
+        {form.status === "credit" ? <Field label="Vence el" type="date" value={form.due_on ?? ""} onChange={(value) => onChange({ ...form, due_on: value })} /> : null}
+        <PaymentMethodsFields lines={form.payment_methods ?? defaultPaymentMethods()} totalAmount={saleTotal} file={form.proof_photo} onChange={(lines) => onChange({ ...form, payment_methods: lines })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-20")} placeholder={isRenew ? "Ej. Renovación con mismo plan" : ""} /></label>
+        <FormActions onClose={onClose} submitLabel={isRenew ? "Renovar y cobrar" : "Cobrar y activar"} />
+      </form>
+    </Modal>
+  );
 }
 
-function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChange, onClose, onSubmit, onDeleteMembership, onEditMembership }: { open: boolean; member: AnyRow | null; rows: AnyRow[]; saleForm: AnyRow; plans: AnyRow[]; onSaleChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void; onDeleteMembership: (membership: AnyRow) => void; onEditMembership: (membership: AnyRow) => void }) {
+function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChange, onClose, onSubmit, onDeleteMembership, onEditMembership, onRenew }: { open: boolean; member: AnyRow | null; rows: AnyRow[]; saleForm: AnyRow; plans: AnyRow[]; onSaleChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void; onDeleteMembership: (membership: AnyRow) => void; onEditMembership: (membership: AnyRow) => void; onRenew: (membership: AnyRow) => void }) {
   return (
     <Modal open={open} title="Membresías del socio" subtitle={member ? `${member.first_name} ${member.last_name} · DNI ${member.dni ?? member.document_number}` : "Historial y nueva venta"} onClose={onClose}>
       <div className="space-y-5">
-        <DataTable title="Historial de membresías" rows={rows} columns={["plan_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => row.status !== "cancelled" && row.status !== "replaced" ? <ActionButtons onEdit={() => onEditMembership(row)} onDelete={() => onDeleteMembership(row)} /> : undefined} />
+        <DataTable title="Historial de membresías" rows={rows} columns={["plan_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => row.status !== "cancelled" && row.status !== "replaced" ? <ActionButtons onEdit={() => onEditMembership(row)} onDelete={() => onDeleteMembership(row)} extra={membershipCanRenew(row) ? <IconButton title="Renovar membresía" onClick={() => onRenew(row)} className="bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"><RefreshCw className="h-4 w-4" /></IconButton> : null} /> : undefined} />
         <form onSubmit={onSubmit} className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4">
           <h3 className="text-lg font-black">Activar nueva membresía</h3>
           <div className="mt-3 grid gap-3">

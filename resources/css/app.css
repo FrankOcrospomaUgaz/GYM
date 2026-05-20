@@ -178,3 +178,14 @@ html[data-apex-theme="light"] body {
 * {
   box-sizing: border-box;
 }
+
+.swal2-container {
+  z-index: 20000 !important;
+}
+
+.gym-toast-popup {
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+}

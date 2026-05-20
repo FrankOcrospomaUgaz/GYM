@@ -80,7 +80,7 @@ export function SearchableSelect({
         }}
         onFocus={() => {
           setOpen(true);
-          setText(selected?.label ?? "");
+          setText("");
         }}
         onKeyDown={(event) => {
           if (event.key === "Escape") setOpen(false);
