@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit3, Eye, IdCard, LayoutDashboard, LogOut, Menu, MessageCircle, PackageCheck, Plus, QrCode, RefreshCw, Search, ShieldCheck, Trash2, Trophy, Users, X } from "lucide-react";
+import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit3, Eye, IdCard, LayoutDashboard, LogOut, Menu, MessageCircle, PackageCheck, Plus, QrCode, RefreshCw, Search, ShieldCheck, Trash2, Trophy, UserPlus, Users, X } from "lucide-react";
 import { httpClient } from "../http/client";
 import { parseApiError, registerHttpErrorHandlers } from "../http/api-errors";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
@@ -35,7 +35,7 @@ type AnyRow = Record<string, any>;
 type Tab = "dashboard" | "members" | "plans" | "memberships" | "attendance" | "classes" | "finance" | "products" | "equipment" | "system";
 type ConfirmState = { title: string; body: string; onConfirm: () => Promise<void> } | null;
 type ErrorState = { title: string; message: string; details?: string[]; sessionExpired?: boolean } | null;
-type MemberModalContext = "general" | "training";
+type MemberModalContext = "general" | "training" | "sale";
 type ClassViewMode = "mes" | "semana" | "tabla";
 
 const classDisciplines = ["MMA", "Sparring", "Box", "Brazilian Jiu-Jitsu", "Muay Thai", "Funcional", "Cardio", "Fuerza", "Yoga"];
@@ -226,7 +226,7 @@ const labels: Record<string, string> = {
   preferred_time: "Hora",
   payment_method: "Pago",
   payment_status: "Estado pago",
-  balance_due: "Saldo",
+  balance_due: "Saldo pendiente",
   amount_paid: "Cobrado",
   type: "Tipo",
   total_amount: "Total",
@@ -330,13 +330,29 @@ function formatCell(column: string, value: unknown, row?: AnyRow) {
   if (column === "method" || column === "payment_method") {
     return paymentMethodsLabel(value, row?.payment_methods, (code) => cellTranslations.method[code] ?? code);
   }
-  if (column.includes("amount") || column === "price" || column === "discount") return money(value);
+  if (column === "movement_type") {
+    const key = String(value);
+    const label = cellTranslations.movement_type[key] ?? key;
+    const classes = key === "expense"
+      ? "bg-red-50 text-red-700 ring-red-200"
+      : key === "income"
+        ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+        : "bg-blue-50 text-blue-700 ring-blue-200";
+    return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-black ring-1 ${classes}`}>{label}</span>;
+  }
+  if (column === "amount" && row?.movement_type) {
+    const amount = Number(value ?? 0);
+    const classes = amount < 0 ? "font-black text-red-700" : "font-black text-emerald-700";
+    return <span className={classes}>{money(value)}</span>;
+  }
+  if (column === "balance_due" || column.includes("amount") || column === "price" || column === "discount") return money(value);
   if (column === "duration_days") return `${value ?? 0} días`;
   if (column === "grace_days") return `${value ?? 0} días`;
   if (column === "monthly_fee") return money(value);
   if (column === "selected_days" && Array.isArray(value)) return value.join(", ");
   if (column === "day_schedules" && value && typeof value === "object") return Object.entries(value as Record<string, { start?: string; end?: string }>).map(([day, range]) => `${day}: ${range.start ?? "--:--"}-${range.end ?? "--:--"}`).join(", ");
-  if (typeof value === "boolean" || value === 0 || value === 1) return Boolean(value) ? "Sí" : "No";
+  if (typeof value === "boolean") return value ? "Sí" : "No";
+  if (["includes_classes", "includes_trainer", "is_active"].includes(column) && (value === 0 || value === 1)) return Boolean(value) ? "Sí" : "No";
   if (column === "type" || column === "payment_status") {
     const map = column === "type" ? cellTranslations.movement_type : cellTranslations.payment_status;
     if (map?.[String(value)]) return map[String(value)];
@@ -550,6 +566,9 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
       membership_plan_name: payment.membership_plan_name,
       membership_starts_on: payment.membership_starts_on,
       membership_ends_on: payment.membership_ends_on,
+      membership_status: payment.membership_status,
+      membership_price: payment.membership_price,
+      membership_discount: payment.membership_discount,
       movement_date: payment.paid_on ?? payment.due_on,
       proof_url: payment.proof_url,
       status: payment.status,
@@ -579,6 +598,26 @@ function dateOnly(value: unknown) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function formatDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function currentMonthDateRange() {
+  const today = new Date();
+  return { from: formatDateInput(new Date(today.getFullYear(), today.getMonth(), 1)), to: formatDateInput(today) };
+}
+
+function isWithinDateRange(value: unknown, from: string, to: string) {
+  const date = String(value ?? "").slice(0, 10);
+  if (!date) return false;
+  if (from && date < from) return false;
+  if (to && date > to) return false;
+  return true;
+}
+
 function daysUntil(value: unknown) {
   const date = dateOnly(value);
   if (!date) return null;
@@ -601,21 +640,50 @@ function membershipEffectiveStatus(membership: AnyRow) {
   return String(membership.display_status ?? membership.status ?? "");
 }
 
-function membershipStatusForDisplay(row?: AnyRow) {
-  if (!row) return "";
-  if (row.display_status) return String(row.display_status);
-  const status = String(row.status ?? "");
-  if (status !== "active") return status;
-  const today = new Date().toISOString().slice(0, 10);
-  if (String(row.ends_on ?? "") < today) return "expired";
-  if (String(row.starts_on ?? "") > today) return "pending";
-  return "active";
+function membershipHasSuccessor(row: AnyRow, allRows: AnyRow[]) {
+  const memberId = Number(row.member_id);
+  const rowId = Number(row.id);
+  const endsOn = String(row.ends_on ?? "");
+  return allRows.some((other) => Number(other.member_id) === memberId && Number(other.id) !== rowId && !["cancelled", "replaced"].includes(String(other.status ?? "")) && String(other.starts_on ?? "") > endsOn);
 }
 
-function membershipCanRenew(row: AnyRow) {
+function membershipStatusForDisplay(row?: AnyRow, allRows?: AnyRow[]) {
+  if (!row) return "";
+  const dbStatus = String(row.status ?? "");
+  if (dbStatus === "replaced" || dbStatus === "cancelled") return dbStatus;
+  let status = row.display_status ? String(row.display_status) : dbStatus;
+  if (!row.display_status && dbStatus === "active") {
+    const today = new Date().toISOString().slice(0, 10);
+    if (String(row.ends_on ?? "") < today) status = "expired";
+    else if (String(row.starts_on ?? "") > today) status = "pending";
+    else status = "active";
+  }
+  if (status === "expired" && allRows?.length && membershipHasSuccessor(row, allRows)) return "replaced";
+  return status;
+}
+
+function membershipCanEditDelete(row: AnyRow, allRows?: AnyRow[]) {
+  return membershipStatusForDisplay(row, allRows) === "active";
+}
+
+function membershipCanRenew(row: AnyRow, allRows?: AnyRow[]) {
   const dbStatus = String(row.status ?? "");
   if (dbStatus === "cancelled" || dbStatus === "replaced") return false;
-  return membershipStatusForDisplay(row) === "expired";
+  if (allRows?.length && membershipHasSuccessor(row, allRows)) return false;
+  return membershipStatusForDisplay(row, allRows) === "expired";
+}
+
+function membershipRowActions(row: AnyRow, allRows: AnyRow[], onEdit: (row: AnyRow) => void, onDelete: (row: AnyRow) => void, onRenew: (row: AnyRow) => void) {
+  const canEditDelete = membershipCanEditDelete(row, allRows);
+  const canRenew = membershipCanRenew(row, allRows);
+  if (!canEditDelete && !canRenew) return null;
+  return (
+    <ActionButtons
+      onEdit={canEditDelete ? () => onEdit(row) : undefined}
+      onDelete={canEditDelete ? () => onDelete(row) : undefined}
+      extra={canRenew ? <IconButton title="Renovar membresía" onClick={() => onRenew(row)} className="bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"><RefreshCw className="h-4 w-4" /></IconButton> : null}
+    />
+  );
 }
 
 function defaultSaleForm(overrides: AnyRow = {}): AnyRow {
@@ -917,6 +985,13 @@ export function GymPage() {
     setMemberModalOpen(true);
   }
 
+  function openMemberFromSale() {
+    setEditingMemberId(null);
+    setMemberModalContext("sale");
+    setMemberForm({ ...emptyMember, branch_id: branches[0]?.id ? String(branches[0].id) : "" });
+    setMemberModalOpen(true);
+  }
+
   async function openMemberMemberships(member: AnyRow) {
     setSelectedMember(member);
     setRenewingMembership(null);
@@ -961,8 +1036,16 @@ export function GymPage() {
       notify("Socio registrado correctamente.");
     }
     setMemberModalOpen(false);
+    const context = memberModalContext;
+    if (context === "sale" && savedMember?.id) {
+      setSaleForm((current) => ({ ...current, member_id: String(savedMember.id) }));
+      setMembers((current) => (current.some((member) => Number(member.id) === Number(savedMember?.id)) ? current : [savedMember as AnyRow, ...current]));
+      setMemberModalContext("general");
+      await loadAll();
+      return;
+    }
     await loadAll();
-    if (memberModalContext === "training" && savedMember?.id) {
+    if (context === "training" && savedMember?.id) {
       setTrainingSubscriptionForm((current: AnyRow) => ({ ...current, member_id: String(savedMember.id) }));
       setMembers((current) => current.some((member) => Number(member.id) === Number(savedMember?.id)) ? current : [savedMember as AnyRow, ...current]);
       setTrainingSubscriptionModalOpen(true);
@@ -1055,18 +1138,22 @@ export function GymPage() {
   async function openMembershipFromCash(movement: AnyRow) {
     const membershipId = Number(movement.membership_id);
     if (!membershipId) return;
-    setMembershipViewOpen(true);
-    setMembershipViewLoading(true);
-    setMembershipViewData({
+    const preview = {
       member_name: movement.member_name,
       plan_name: movement.membership_plan_name,
       branch_name: movement.branch_name,
       starts_on: movement.membership_starts_on,
       ends_on: movement.membership_ends_on,
-    });
+      status: movement.membership_status,
+      price: movement.membership_price,
+      discount: movement.membership_discount,
+    };
+    setMembershipViewOpen(true);
+    setMembershipViewLoading(true);
+    setMembershipViewData(preview);
     try {
       const response = await httpClient.get(`/api/gym/memberships/${membershipId}`);
-      setMembershipViewData(response.data);
+      setMembershipViewData({ ...preview, ...response.data });
     } catch {
       notify("No se pudo cargar el detalle completo de la membresía.", "warning");
     } finally {
@@ -1655,7 +1742,7 @@ export function GymPage() {
         </header>
 
         <section className="space-y-5 p-3 sm:p-4 lg:space-y-6 lg:p-8">
-          {tab === "dashboard" ? <Dashboard dashboard={dashboard} activeMembers={activeMembers.length} membershipsCount={memberships.length} notifications={notifications} members={members} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={setCredentialMember} /> : null}
+          {tab === "dashboard" ? <Dashboard dashboard={dashboard} activeMembers={activeMembers.length} membershipsCount={memberships.length} members={members} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={setCredentialMember} /> : null}
           {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio">
             <div className="mb-4 grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-[repeat(3,minmax(0,1fr))]">
               <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Estado</span><SearchableSelect value={memberStatusFilter} onChange={(value) => { setMembersPage(1); setMemberStatusFilter(value); }} options={memberStatusFilterOptions.slice(1)} emptyOption={memberStatusFilterOptions[0]} className={fieldClass()} /></label>
@@ -1685,7 +1772,7 @@ export function GymPage() {
 
       <BottomNav tab={tab} onSelect={selectTab} tabs={visibleTabs.filter((item) => item.id !== "system")} />
       <PlanModal open={planModalOpen} editing={Boolean(editingPlanId)} form={planForm} onChange={setPlanForm} onClose={() => setPlanModalOpen(false)} onSubmit={savePlan} />
-      <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} renewFrom={renewingMembership} onChange={setSaleForm} onClose={closeSaleModal} onSubmit={sellMembership} />
+      <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} renewFrom={renewingMembership} onChange={setSaleForm} onClose={closeSaleModal} onSubmit={sellMembership} onCreateMember={openMemberFromSale} />
       <MemberMembershipModal open={memberMembershipModalOpen} member={selectedMember} rows={memberMemberships} saleForm={saleForm} plans={plans} onSaleChange={setSaleForm} onClose={() => setMemberMembershipModalOpen(false)} onSubmit={sellMembership} onDeleteMembership={confirmDeleteMembership} onEditMembership={openEditMembership} onRenew={openRenewMembership} />
       <EditMembershipModal open={membershipEditModalOpen} form={membershipEditForm} plans={plans} onChange={setMembershipEditForm} onClose={() => { setMembershipEditModalOpen(false); setEditingMembershipId(null); }} onSubmit={saveMembershipEdit} />
       <MembershipDetailModal open={membershipViewOpen} loading={membershipViewLoading} membership={membershipViewData} onClose={() => { setMembershipViewOpen(false); setMembershipViewLoading(false); setMembershipViewData(null); }} />
@@ -1702,21 +1789,18 @@ export function GymPage() {
       <TrainingSubscriptionModal open={trainingSubscriptionModalOpen} editing={Boolean(editingTrainingSubscriptionId)} form={trainingSubscriptionForm} members={members} onCreateMember={openTrainingMemberModal} onChange={setTrainingSubscriptionForm} onClose={() => { setEditingTrainingSubscriptionId(null); setTrainingSubscriptionModalOpen(false); }} onSubmit={saveTrainingSubscription} />
       <TrainingSubscriptionDetailModal subscription={trainingSubscriptionDetail} onClose={() => setTrainingSubscriptionDetail(null)} onEdit={(subscription) => { setTrainingSubscriptionDetail(null); openEditTrainingSubscription(subscription); }} />
       <MemberCredentialModal member={credentialMember} membership={credentialMember ? memberActiveMembership(credentialMember, memberships) : null} onClose={() => setCredentialMember(null)} onCheckIn={(memberId) => void checkIn(memberId)} />
-      <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => { setMemberModalContext("general"); setMemberModalOpen(false); }} onSubmit={saveMember} />
+      <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => { setMemberModalOpen(false); setMemberModalContext("general"); }} onSubmit={saveMember} stacked />
       <ConfirmModal state={confirm} onClose={() => setConfirm(null)} />
       <ErrorModal state={errorModal} onClose={() => setErrorModal(null)} onGoToLogin={goToLogin} />
     </div>
   );
 }
 
-function Dashboard({ dashboard, activeMembers, membershipsCount, notifications, members, memberships, payments, attendance, trainingSubscriptions, onOpenCredential }: { dashboard: AnyRow; activeMembers: number; membershipsCount: number; notifications: AnyRow[]; members: AnyRow[]; memberships: AnyRow[]; payments: AnyRow[]; attendance: AnyRow[]; trainingSubscriptions: AnyRow[]; onOpenCredential: (member: AnyRow) => void }) {
+function Dashboard({ dashboard, activeMembers, membershipsCount, members, memberships, payments, attendance, trainingSubscriptions, onOpenCredential }: { dashboard: AnyRow; activeMembers: number; membershipsCount: number; members: AnyRow[]; memberships: AnyRow[]; payments: AnyRow[]; attendance: AnyRow[]; trainingSubscriptions: AnyRow[]; onOpenCredential: (member: AnyRow) => void }) {
   return (
     <>
       <div className="grid grid-cols-2 gap-3 lg:gap-4 xl:grid-cols-4">{(dashboard.kpis ?? []).map((kpi: AnyRow) => <div key={kpi.label} className={cardClass()}><p className="text-xs font-bold text-zinc-500 sm:text-sm">{kpi.label}</p><p className="mt-2 text-2xl font-black sm:text-3xl">{kpi.value}</p><p className="mt-2 text-[11px] font-semibold text-zinc-400 sm:text-xs">{kpi.hint}</p></div>)}</div>
-      <div className="grid gap-5 xl:grid-cols-3">
-        <div className={`${cardClass()} xl:col-span-2`}><h2 className="text-lg font-black">Operación de hoy</h2><div className="mt-4 grid gap-3 sm:grid-cols-3"><MetricCard title="Ingresos hoy" value={dashboard.attendance_today ?? 0} yellow /><MetricCard title="Socios activos" value={activeMembers} dark /><MetricCard title="Planes vendidos" value={membershipsCount} /></div></div>
-        <div className={cardClass()}><h2 className="text-lg font-black">Notificaciones</h2><div className="mt-3 space-y-3">{notifications.slice(0, 5).map((item) => <div key={item.id} className="rounded-2xl bg-amber-50 p-3 text-sm"><b>{item.title}</b><p className="text-zinc-600">{item.body}</p></div>)}</div></div>
-      </div>
+      <div className={cardClass()}><h2 className="text-lg font-black">Operación de hoy</h2><div className="mt-4 grid gap-3 sm:grid-cols-3"><MetricCard title="Ingresos hoy" value={dashboard.attendance_today ?? 0} yellow /><MetricCard title="Socios activos" value={activeMembers} dark /><MetricCard title="Planes vendidos" value={membershipsCount} /></div></div>
       <PremiumCommandCenter members={members} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={onOpenCredential} />
     </>
   );
@@ -1875,7 +1959,7 @@ function MembershipsModule({ rows, branches, plans, onNew, onRenew, onEdit, onDe
   const filteredRows = useMemo(() => {
     const term = search.trim().toLowerCase();
     return rows.filter((row) => {
-      const effectiveStatus = membershipStatusForDisplay(row);
+      const effectiveStatus = membershipStatusForDisplay(row, rows);
       if (statusFilter && effectiveStatus !== statusFilter) return false;
       if (branchFilter && String(row.branch_id ?? "") !== branchFilter) return false;
       if (planFilter && String(row.plan_id ?? "") !== planFilter) return false;
@@ -1911,7 +1995,7 @@ function MembershipsModule({ rows, branches, plans, onNew, onRenew, onEdit, onDe
         </label>
       </div>
       <p className="mb-3 text-sm font-semibold text-zinc-500">Mostrando {filteredRows.length} de {rows.length} membresías</p>
-      <DataTable title="Membresías activadas" rows={filteredRows} columns={["member_name", "plan_name", "branch_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} extra={membershipCanRenew(row) ? <IconButton title="Renovar membresía" onClick={() => onRenew(row)} className="bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"><RefreshCw className="h-4 w-4" /></IconButton> : null} />} />
+      <DataTable title="Membresías activadas" rows={filteredRows} columns={["member_name", "plan_name", "branch_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => membershipRowActions(row, rows, onEdit, onDelete, onRenew)} />
     </Module>
   );
 }
@@ -1946,7 +2030,41 @@ function ProductsModule({ products, productSales, branches, branchFilter, onBran
   );
 }
 
+function CashMovementsPanel({ movements, filteredMovements, dateFrom, dateTo, periodIncome, periodExpenses, periodNet, onDateFromChange, onDateToChange, onViewMembership, onCollectPayment }: { movements: AnyRow[]; filteredMovements: AnyRow[]; dateFrom: string; dateTo: string; periodIncome: number; periodExpenses: number; periodNet: number; onDateFromChange: (value: string) => void; onDateToChange: (value: string) => void; onViewMembership: (movement: AnyRow) => void; onCollectPayment: (payment: AnyRow) => void }) {
+  return (
+    <div className={cardClass()}>
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-lg font-black">Movimientos de caja</h2>
+          <p className="mt-1 text-sm font-semibold text-zinc-500">Mostrando {filteredMovements.length} de {movements.length} registros · {formatDateTime(dateFrom)} al {formatDateTime(dateTo)}</p>
+        </div>
+        <span className="shrink-0 self-start rounded-full bg-[#ffcc00] px-3 py-1 text-xs font-black text-zinc-950 sm:self-auto">{filteredMovements.length} registros</span>
+      </div>
+      <div className="mb-4 grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          <span>Fecha inicio</span>
+          <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(event) => onDateFromChange(event.target.value)} className={fieldClass("w-full")} />
+        </label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          <span>Fecha fin</span>
+          <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(event) => onDateToChange(event.target.value)} className={fieldClass("w-full")} />
+        </label>
+        <button type="button" onClick={() => { const range = currentMonthDateRange(); onDateFromChange(range.from); onDateToChange(range.to); }} className="h-11 self-end rounded-2xl bg-white px-4 text-sm font-black text-zinc-700 ring-1 ring-zinc-200">Mes actual</button>
+      </div>
+      <div className="mb-4 grid gap-3 sm:grid-cols-3">
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3"><p className="text-xs font-black uppercase tracking-wide text-emerald-700">Ingresos del período</p><p className="mt-1 text-xl font-black text-emerald-800">{money(periodIncome)}</p></div>
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3"><p className="text-xs font-black uppercase tracking-wide text-red-700">Gastos del período</p><p className="mt-1 text-xl font-black text-red-800">{money(periodExpenses)}</p></div>
+        <div className={`rounded-2xl border px-4 py-3 ${periodNet >= 0 ? "border-zinc-200 bg-zinc-50" : "border-amber-200 bg-amber-50"}`}><p className="text-xs font-black uppercase tracking-wide text-zinc-600">Neto del período</p><p className={`mt-1 text-xl font-black ${periodNet >= 0 ? "text-zinc-950" : "text-amber-800"}`}>{money(periodNet)}</p></div>
+      </div>
+      <DataTable bare rows={filteredMovements} columns={["movement_type", "concept", "member_name", "amount", "balance_due", "method", "movement_date", "status", "branch_name"]} action={(row) => <div className="flex flex-wrap justify-end gap-2">{row.membership_id ? <IconButton title="Ver membresía" onClick={() => void onViewMembership(row)} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><IdCard className="h-4 w-4" /></IconButton> : null}{["pending", "credit", "partial"].includes(String(row.status)) && Number(row.balance_due ?? 0) > 0 ? <IconButton title="Cobrar saldo" onClick={() => onCollectPayment(row)} className="bg-[#ffcc00] text-zinc-950"><Banknote className="h-4 w-4" /></IconButton> : null}</div>} />
+    </div>
+  );
+}
+
 function FinanceModule({ movements, payments, expenses, branches, branchFilter, onBranchFilterChange, onNewIncome, onNewExpense, onCollectPayment, onViewMembership }: { movements: AnyRow[]; payments: AnyRow[]; expenses: AnyRow[]; branches: AnyRow[]; branchFilter: string; onBranchFilterChange: (value: string) => void; onNewIncome: () => void; onNewExpense: () => void; onCollectPayment: (payment: AnyRow) => void; onViewMembership: (movement: AnyRow) => void }) {
+  const defaultRange = useMemo(() => currentMonthDateRange(), []);
+  const [dateFrom, setDateFrom] = useState(defaultRange.from);
+  const [dateTo, setDateTo] = useState(defaultRange.to);
   const methods = ["cash", "yape", "plin", "transfer", "card"];
   const branchScopedPayments = payments.filter(hasAssignedBranch);
   const branchScopedExpenses = expenses.filter(hasAssignedBranch);
@@ -1960,6 +2078,13 @@ function FinanceModule({ movements, payments, expenses, branches, branchFilter, 
   const receivables = branchScopedPayments.filter((payment) => ["pending", "credit", "partial"].includes(String(payment.status)));
   const accountsReceivable = receivables.reduce((sum, payment) => sum + Number(payment.balance_due ?? payment.amount ?? 0), 0);
   const courtesyAmount = branchScopedPayments.filter((payment) => payment.status === "courtesy").reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0);
+  const filteredMovements = useMemo(
+    () => movements.filter((row) => isWithinDateRange(row.movement_date, dateFrom, dateTo)),
+    [movements, dateFrom, dateTo],
+  );
+  const periodIncome = filteredMovements.filter((row) => row.movement_type === "income").reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
+  const periodExpenses = filteredMovements.filter((row) => row.movement_type === "expense").reduce((sum, row) => sum + Math.abs(Number(row.amount ?? 0)), 0);
+  const periodNet = periodIncome - periodExpenses;
 
   return (
     <div className="space-y-4">
@@ -1983,7 +2108,7 @@ function FinanceModule({ movements, payments, expenses, branches, branchFilter, 
         {incomeByMethod.map((item) => <MetricCard key={item.method} title={cellTranslations.method[item.method]} value={money(item.amount)} />)}
       </div>
       <DataTable title="Cuentas por cobrar" rows={receivables} columns={["receipt_number", "payer_name", "amount", "amount_paid", "balance_due", "due_on", "status", "branch_name"]} action={(row) => Number(row.balance_due ?? 0) > 0 ? <IconButton title="Cobrar saldo" onClick={() => onCollectPayment(row)} className="bg-[#ffcc00] text-zinc-950"><Banknote className="h-4 w-4" /></IconButton> : null} />
-      <DataTable title="Movimientos de caja" rows={movements} columns={["movement_type", "concept", "member_name", "amount", "balance_due", "method", "movement_date", "status", "branch_name"]} action={(row) => <div className="flex flex-wrap justify-end gap-2">{row.membership_id ? <IconButton title="Ver membresía" onClick={() => void onViewMembership(row)} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><IdCard className="h-4 w-4" /></IconButton> : null}{["pending", "credit", "partial"].includes(String(row.status)) && Number(row.balance_due ?? 0) > 0 ? <IconButton title="Cobrar saldo" onClick={() => onCollectPayment(row)} className="bg-[#ffcc00] text-zinc-950"><Banknote className="h-4 w-4" /></IconButton> : null}</div>} />
+      <CashMovementsPanel movements={movements} filteredMovements={filteredMovements} dateFrom={dateFrom} dateTo={dateTo} periodIncome={periodIncome} periodExpenses={periodExpenses} periodNet={periodNet} onDateFromChange={setDateFrom} onDateToChange={setDateTo} onViewMembership={onViewMembership} onCollectPayment={onCollectPayment} />
     </div>
   );
 }
@@ -2106,49 +2231,49 @@ function WeeklySchedule({ classes, weekdays, onEdit }: { classes: AnyRow[]; week
   );
 }
 
-function ActionButtons({ onEdit, onDelete, onDetail, extra }: { onEdit?: () => void; onDelete: () => void; onDetail?: () => void; extra?: ReactNode }) {
-  return <div className="flex flex-wrap justify-end gap-2">{extra}{onDetail ? <IconButton title="Ver detalles" onClick={onDetail} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><Eye className="h-4 w-4" /></IconButton> : null}{onEdit ? <IconButton title="Editar" onClick={onEdit} className="bg-zinc-950 text-white"><Edit3 className="h-4 w-4" /></IconButton> : null}<IconButton title="Cancelar" onClick={onDelete} className="bg-red-50 text-red-700 ring-1 ring-red-100"><Trash2 className="h-4 w-4" /></IconButton></div>;
+function ActionButtons({ onEdit, onDelete, onDetail, extra }: { onEdit?: () => void; onDelete?: () => void; onDetail?: () => void; extra?: ReactNode }) {
+  return <div className="flex flex-wrap justify-end gap-2">{extra}{onDetail ? <IconButton title="Ver detalles" onClick={onDetail} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><Eye className="h-4 w-4" /></IconButton> : null}{onEdit ? <IconButton title="Editar" onClick={onEdit} className="bg-zinc-950 text-white"><Edit3 className="h-4 w-4" /></IconButton> : null}{onDelete ? <IconButton title="Cancelar" onClick={onDelete} className="bg-red-50 text-red-700 ring-1 ring-red-100"><Trash2 className="h-4 w-4" /></IconButton> : null}</div>;
 }
 
 function IconButton({ title, onClick, className, children }: { title: string; onClick: () => void; className: string; children: ReactNode }) {
   return (
-    <span className="group relative inline-flex">
-      <button type="button" aria-label={title} title={title} onClick={onClick} className={`grid h-10 w-10 place-items-center rounded-xl text-xs font-bold transition hover:-translate-y-0.5 ${className}`}>
+    <span className="group relative z-30 inline-flex">
+      <button type="button" aria-label={title} onClick={onClick} className={`grid h-10 w-10 place-items-center rounded-xl text-xs font-bold transition hover:-translate-y-0.5 ${className}`}>
         {children}
       </button>
-      <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg bg-zinc-950 px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100">{title}</span>
+      <span className="pointer-events-none absolute bottom-full right-0 z-[250] mb-2 whitespace-nowrap rounded-lg bg-zinc-950 px-2 py-1 text-[11px] font-bold text-white opacity-0 shadow-lg transition group-hover:opacity-100 group-focus-within:opacity-100">{title}</span>
     </span>
   );
 }
 
-function DataTable({ title, rows, columns, action }: { title: string; rows: AnyRow[]; columns: string[]; action?: (row: AnyRow) => ReactNode }) {
+function DataTable({ title, rows, columns, action, bare }: { title?: string; rows: AnyRow[]; columns: string[]; action?: (row: AnyRow) => ReactNode; bare?: boolean }) {
   return (
-    <div className={cardClass()}>
-      <div className="mb-4 flex items-center justify-between gap-3"><h2 className="min-w-0 truncate text-lg font-black">{title}</h2><span className="shrink-0 rounded-full bg-[#ffcc00] px-3 py-1 text-xs font-black text-zinc-950">{rows.length} registros</span></div>
+    <div className={bare ? "" : cardClass()}>
+      {!bare ? <div className="mb-4 flex items-center justify-between gap-3"><h2 className="min-w-0 truncate text-lg font-black">{title}</h2><span className="shrink-0 rounded-full bg-[#ffcc00] px-3 py-1 text-xs font-black text-zinc-950">{rows.length} registros</span></div> : null}
       <div className="space-y-3 md:hidden">
         {rows.length === 0 ? <p className="rounded-2xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-500">No hay registros para mostrar.</p> : null}
         {rows.map((row) => <article key={row.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><div className="grid gap-2">{columns.slice(0, 6).map((column) => <div key={column} className="flex items-start justify-between gap-3 border-b border-zinc-200/70 pb-2 last:border-0 last:pb-0"><span className="text-[11px] font-black uppercase tracking-wide text-zinc-500">{labels[column] ?? column}</span><span className="max-w-[55%] text-right text-sm font-semibold text-zinc-900">{formatCell(column, row[column], row)}</span></div>)}</div>{action ? <div className="mt-4 flex justify-end">{action(row)}</div> : null}</article>)}
       </div>
-      <div className="hidden overflow-x-auto rounded-2xl border border-zinc-100 md:block">
-        <table className="w-full min-w-[760px] text-left text-sm">
-          <thead><tr className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">{columns.map((column) => <th key={column} className="px-3 py-3">{labels[column] ?? column}</th>)}{action ? <th className="px-3 py-3 text-right">Acciones</th> : null}</tr></thead>
-          <tbody>{rows.map((row) => <tr key={row.id} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/70">{columns.map((column) => <td key={column} className="px-3 py-3">{formatCell(column, row[column], row)}</td>)}{action ? <td className="px-3 py-3">{action(row)}</td> : null}</tr>)}</tbody>
+      <div className="hidden overflow-visible rounded-2xl border border-zinc-100 md:block">
+        <table className="w-full table-fixed text-left text-sm">
+          <thead><tr className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">{columns.map((column) => <th key={column} className="px-3 py-3">{labels[column] ?? column}</th>)}{action ? <th className="w-28 overflow-visible px-3 py-3 text-right">Acciones</th> : null}</tr></thead>
+          <tbody>{rows.map((row) => <tr key={row.id} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/70">{columns.map((column) => <td key={column} className="overflow-hidden px-3 py-3 break-words">{formatCell(column, row[column], row)}</td>)}{action ? <td className="overflow-visible px-3 py-3">{action(row)}</td> : null}</tr>)}</tbody>
         </table>
       </div>
     </div>
   );
 }
 
-function Modal({ open, title, subtitle, children, onClose }: { open: boolean; title: string; subtitle?: string; children: ReactNode; onClose: () => void }) {
+function Modal({ open, title, subtitle, children, onClose, stacked }: { open: boolean; title: string; subtitle?: string; children: ReactNode; onClose: () => void; stacked?: boolean }) {
   if (!open) return null;
-  return <div className="fixed inset-0 z-50 grid place-items-end bg-zinc-950/60 p-0 backdrop-blur-sm sm:place-items-center sm:p-4"><div className="max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-3xl"><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black">{title}</h2>{subtitle ? <p className="mt-1 text-sm text-zinc-500">{subtitle}</p> : null}</div><button onClick={onClose} className="rounded-2xl bg-zinc-100 p-2 text-zinc-600"><X className="h-5 w-5" /></button></div>{children}</div></div>;
+  return <div className={`fixed inset-0 ${stacked ? "z-[60]" : "z-50"} grid place-items-end bg-zinc-950/60 p-0 backdrop-blur-sm sm:place-items-center sm:p-4`}><div className="max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-3xl"><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black">{title}</h2>{subtitle ? <p className="mt-1 text-sm text-zinc-500">{subtitle}</p> : null}</div><button onClick={onClose} className="rounded-2xl bg-zinc-100 p-2 text-zinc-600"><X className="h-5 w-5" /></button></div>{children}</div></div>;
 }
 
-function MemberModal({ open, editing, form, branches, fitnessGoals, onCreateGoal, onChange, onSearchDni, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; fitnessGoals: AnyRow[]; onCreateGoal: (name: string) => Promise<void>; onChange: (form: AnyRow) => void; onSearchDni: (dni: string) => Promise<void>; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+function MemberModal({ open, editing, form, branches, fitnessGoals, onCreateGoal, onChange, onSearchDni, onClose, onSubmit, stacked }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; fitnessGoals: AnyRow[]; onCreateGoal: (name: string) => Promise<void>; onChange: (form: AnyRow) => void; onSearchDni: (dni: string) => Promise<void>; onClose: () => void; onSubmit: (event: FormEvent) => void; stacked?: boolean }) {
   const [newGoal, setNewGoal] = useState("");
 
   return (
-    <Modal open={open} title={editing ? "Editar socio" : "Nuevo socio"} subtitle="Datos personales, búsqueda RENIEC y contacto de emergencia." onClose={onClose}>
+    <Modal open={open} title={editing ? "Editar socio" : "Nuevo socio"} subtitle="Datos personales, búsqueda RENIEC y contacto de emergencia." onClose={onClose} stacked={stacked}>
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
@@ -2185,14 +2310,24 @@ function PlanModal({ open, editing, form, onChange, onClose, onSubmit }: { open:
   return <Modal open={open} title={editing ? "Editar plan" : "Nuevo plan"} subtitle="Configura precio, vigencia, acceso y beneficios." onClose={onClose}><form onSubmit={onSubmit} className="space-y-4"><div className="grid gap-3 sm:grid-cols-2"><Field label="Nombre" value={form.name} onChange={(value) => onChange({ ...form, name: value })} required /><Field label="Código" value={form.code} onChange={(value) => onChange({ ...form, code: value })} required /><Field label="Precio" type="number" value={form.price} onChange={(value) => onChange({ ...form, price: value })} required /><Field label="Duración en días" type="number" value={form.duration_days} onChange={(value) => onChange({ ...form, duration_days: value })} required /><Field label="Días de gracia" type="number" value={form.grace_days} onChange={(value) => onChange({ ...form, grace_days: value })} required /><Field label="Accesos diarios" type="number" value={form.daily_access_limit} onChange={(value) => onChange({ ...form, daily_access_limit: value })} /></div><div className="grid gap-3 rounded-2xl bg-zinc-50 p-4 text-sm font-bold"><label className="flex items-center gap-2"><input type="checkbox" checked={form.includes_classes} onChange={(event) => onChange({ ...form, includes_classes: event.target.checked })} /> Incluye clases grupales</label><label className="flex items-center gap-2"><input type="checkbox" checked={form.includes_trainer} onChange={(event) => onChange({ ...form, includes_trainer: event.target.checked })} /> Incluye entrenador</label><label className="flex items-center gap-2"><input type="checkbox" checked={form.is_active} onChange={(event) => onChange({ ...form, is_active: event.target.checked })} /> Activo para ventas</label></div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Descripción<textarea value={form.description ?? ""} onChange={(event) => onChange({ ...form, description: event.target.value })} className={fieldClass("min-h-24")} /></label><FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Crear plan"} /></form></Modal>;
 }
 
-function SaleModal({ open, form, members, plans, renewFrom, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; plans: AnyRow[]; renewFrom?: AnyRow | null; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+function SaleModal({ open, form, members, plans, renewFrom, onChange, onClose, onSubmit, onCreateMember }: { open: boolean; form: AnyRow; members: AnyRow[]; plans: AnyRow[]; renewFrom?: AnyRow | null; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void; onCreateMember: () => void }) {
   const isRenew = Boolean(renewFrom);
   const saleTotal = Math.max(0, Number(plans.find((plan) => String(plan.id) === String(form.plan_id))?.price ?? 0) - Number(form.discount ?? 0));
   return (
     <Modal open={open} title={isRenew ? "Renovar membresía" : "Nueva venta"} subtitle={isRenew ? `Renueva a ${renewFrom?.member_name ?? "el socio"} · venció el ${formatDateTime(renewFrom?.ends_on)}` : "Activa una membresía y registra el pago."} onClose={onClose}>
       <form onSubmit={onSubmit} className="space-y-3">
         {isRenew ? <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">El plan <span className="font-black">{renewFrom?.plan_name}</span> viene preseleccionado. Puedes cambiarlo, ajustar el pago y registrar la renovación.</div> : null}
-        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><SearchableSelect required disabled={isRenew} value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members)} emptyOption={{ value: "", label: "Seleccione socio" }} className={fieldClass("w-full")} /></label>
+        {!isRenew ? (
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+            <div className="flex items-center justify-between gap-3">
+              <RequiredLabel>Socio</RequiredLabel>
+              <button type="button" onClick={onCreateMember} className="inline-flex items-center gap-1.5 rounded-xl bg-zinc-950 px-3 py-2 text-[11px] font-black normal-case tracking-normal text-white"><UserPlus className="h-3.5 w-3.5" />Nuevo socio</button>
+            </div>
+            <SearchableSelect required value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members)} emptyOption={{ value: "", label: "Seleccione socio" }} className={fieldClass("w-full")} />
+          </label>
+        ) : (
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><SearchableSelect required disabled value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members)} emptyOption={{ value: "", label: "Seleccione socio" }} className={fieldClass("w-full")} /></label>
+        )}
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Plan</RequiredLabel><SearchableSelect required value={String(form.plan_id ?? "")} onChange={(value) => onChange({ ...form, plan_id: value })} options={planOptions(plans, money)} emptyOption={{ value: "", label: "Seleccione plan" }} className={fieldClass("w-full")} /></label>
         <div className="grid gap-3 sm:grid-cols-2"><Field label="Fecha de inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required /><Field label="Descuento" type="number" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} /></div>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<SearchableSelect value={form.status ?? "paid"} onChange={(value) => onChange({ ...form, status: value })} options={paymentStatusOptions} className={fieldClass("w-full")} /></label>
@@ -2209,7 +2344,7 @@ function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChan
   return (
     <Modal open={open} title="Membresías del socio" subtitle={member ? `${member.first_name} ${member.last_name} · DNI ${member.dni ?? member.document_number}` : "Historial y nueva venta"} onClose={onClose}>
       <div className="space-y-5">
-        <DataTable title="Historial de membresías" rows={rows} columns={["plan_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => row.status !== "cancelled" && row.status !== "replaced" ? <ActionButtons onEdit={() => onEditMembership(row)} onDelete={() => onDeleteMembership(row)} extra={membershipCanRenew(row) ? <IconButton title="Renovar membresía" onClick={() => onRenew(row)} className="bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"><RefreshCw className="h-4 w-4" /></IconButton> : null} /> : undefined} />
+        <DataTable title="Historial de membresías" rows={rows} columns={["plan_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => String(row.status ?? "") === "cancelled" ? undefined : membershipRowActions(row, rows, onEditMembership, onDeleteMembership, onRenew)} />
         <form onSubmit={onSubmit} className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4">
           <h3 className="text-lg font-black">Activar nueva membresía</h3>
           <div className="mt-3 grid gap-3">
@@ -2949,7 +3084,7 @@ function MembershipDetailModal({ open, membership, loading, onClose }: { open: b
         <p><span className="font-black text-zinc-500">Vence:</span> {formatDateTime(membership.ends_on)}</p>
         <p><span className="font-black text-zinc-500">Precio:</span> {money(membership.price)}</p>
         <p><span className="font-black text-zinc-500">Descuento:</span> {money(membership.discount)}</p>
-        <p><span className="font-black text-zinc-500">Estado:</span> {cellTranslations.status[String(membership.display_status ?? membership.status)] ?? membership.status}</p>
+        <p className="flex flex-wrap items-center gap-2"><span className="font-black text-zinc-500">Estado:</span> <StatusBadge value={membershipStatusForDisplay(membership)} /></p>
         {membership.notes ? <p><span className="font-black text-zinc-500">Notas:</span> {membership.notes}</p> : null}
       </div>
       ) : null}

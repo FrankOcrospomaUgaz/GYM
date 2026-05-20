@@ -134,6 +134,31 @@ class GymController extends Controller
         }
 
         $query->update(['status' => 'expired', 'updated_at' => now()]);
+
+        $this->syncSupersededMemberships($tenantId, $memberId);
+    }
+
+    private function syncSupersededMemberships(?int $tenantId = null, ?int $memberId = null): void
+    {
+        $query = DB::table('gym_memberships')
+            ->whereIn('status', ['active', 'expired'])
+            ->whereExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('gym_memberships as newer')
+                    ->whereColumn('newer.member_id', 'gym_memberships.member_id')
+                    ->whereColumn('newer.id', '<>', 'gym_memberships.id')
+                    ->whereNotIn('newer.status', ['cancelled', 'replaced'])
+                    ->whereColumn('newer.starts_on', '>', 'gym_memberships.ends_on');
+            });
+
+        if ($tenantId !== null) {
+            $query->where('tenant_id', $tenantId);
+        }
+        if ($memberId !== null) {
+            $query->where('member_id', $memberId);
+        }
+
+        $query->update(['status' => 'replaced', 'updated_at' => now()]);
     }
 
     private function membershipDisplayStatus(object $membership): string
@@ -174,6 +199,22 @@ class GymController extends Controller
         }
 
         $query->update(['status' => 'replaced', 'updated_at' => now()]);
+    }
+
+    private function resolveMembershipConflictsOnSale(int $memberId, string $startsOn, string $endsOn, ?int $exceptMembershipId = null): void
+    {
+        $this->replaceConflictingMemberships($memberId, $startsOn, $endsOn, $exceptMembershipId);
+
+        $priorQuery = DB::table('gym_memberships')
+            ->where('member_id', $memberId)
+            ->whereIn('status', ['active', 'expired'])
+            ->where('ends_on', '<', $startsOn);
+
+        if ($exceptMembershipId !== null) {
+            $priorQuery->where('id', '<>', $exceptMembershipId);
+        }
+
+        $priorQuery->update(['status' => 'replaced', 'updated_at' => now()]);
     }
 
     private function assertMembershipSaleIsValid(Request $request, array $data, object $plan, Carbon $starts): void
@@ -799,7 +840,7 @@ class GymController extends Controller
                 ]);
             }
 
-            $this->replaceConflictingMemberships((int) $data['member_id'], $starts->toDateString(), $endsOn);
+            $this->resolveMembershipConflictsOnSale((int) $data['member_id'], $starts->toDateString(), $endsOn);
             $membershipId = DB::table('gym_memberships')->insertGetId([
                 'tenant_id' => $tenantId,
                 'member_id' => $data['member_id'],
@@ -861,7 +902,7 @@ class GymController extends Controller
         if ($request->filled('status')) {
             $query->where('gym_memberships.status', (string) $request->query('status'));
         } else {
-            $query->whereNotIn('gym_memberships.status', ['replaced', 'cancelled']);
+            $query->whereNotIn('gym_memberships.status', ['cancelled']);
         }
 
         return response()->json($query->limit(150)->get()->map(fn ($row) => $this->enrichMembershipRow($row)));
@@ -905,12 +946,31 @@ class GymController extends Controller
 
     public function showMembership(Request $request, int $membership): JsonResponse
     {
-        $row = $this->scopeTenant(DB::table('gym_memberships')->where('id', $membership), $request, 'gym_memberships')
+        $tenantId = $this->defaultTenantId($request);
+        $this->refreshExpiredMemberships($tenantId);
+
+        $row = $this->scopeTenant(
+            DB::table('gym_memberships')->where('gym_memberships.id', $membership),
+            $request,
+            'gym_memberships'
+        )
             ->join('gym_members', 'gym_members.id', '=', 'gym_memberships.member_id')
             ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
             ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_members.branch_id')
             ->select(
-                'gym_memberships.*',
+                'gym_memberships.id',
+                'gym_memberships.tenant_id',
+                'gym_memberships.member_id',
+                'gym_memberships.plan_id',
+                'gym_memberships.starts_on',
+                'gym_memberships.ends_on',
+                'gym_memberships.price',
+                'gym_memberships.discount',
+                'gym_memberships.status',
+                'gym_memberships.notes',
+                'gym_memberships.sold_by',
+                'gym_memberships.created_at',
+                'gym_memberships.updated_at',
                 DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"),
                 'gym_plans.name as plan_name',
                 'gym_plans.duration_days',
@@ -959,7 +1019,7 @@ class GymController extends Controller
         abort_unless($discount <= (float) $plan->price, 422, 'El descuento no puede ser mayor al precio del plan.');
 
         $this->refreshExpiredMemberships($tenantId, (int) $row->member_id);
-        $this->replaceConflictingMemberships((int) $row->member_id, $startsOn, $endsOn, $membership);
+        $this->resolveMembershipConflictsOnSale((int) $row->member_id, $startsOn, $endsOn, $membership);
 
         $update = [
             'plan_id' => $planId,
@@ -1096,6 +1156,9 @@ class GymController extends Controller
         if ($this->tableHasColumn('gym_payments', 'membership_id')) {
             $select[] = 'gym_memberships.starts_on as membership_starts_on';
             $select[] = 'gym_memberships.ends_on as membership_ends_on';
+            $select[] = 'gym_memberships.status as membership_status';
+            $select[] = 'gym_memberships.price as membership_price';
+            $select[] = 'gym_memberships.discount as membership_discount';
             $select[] = 'membership_plan.name as membership_plan_name';
         }
         $query->select($select);
