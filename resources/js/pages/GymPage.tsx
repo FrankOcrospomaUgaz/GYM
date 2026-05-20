@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit3, Eye, IdCard, LayoutDashboard, LogOut, Menu, MessageCircle, PackageCheck, Plus, QrCode, RefreshCw, Search, ShieldCheck, Trash2, Trophy, UserPlus, Users, X } from "lucide-react";
+import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit3, Eye, IdCard, LayoutDashboard, LogIn, LogOut, Menu, MessageCircle, PackageCheck, Plus, QrCode, RefreshCw, Search, ShieldCheck, Trash2, Trophy, UserPlus, Users, X } from "lucide-react";
 import { httpClient } from "../http/client";
 import { parseApiError, registerHttpErrorHandlers } from "../http/api-errors";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
@@ -8,6 +8,9 @@ import { appendPaymentMethodsToFormData, defaultPaymentMethods, normalizePayment
 import { showToast, type ToastIcon } from "../lib/toast";
 import {
   branchOptions,
+  defaultBranchId,
+  isMemberBranchLocked,
+  memberBranchSelectOptions,
   categoryOptions,
   equipmentStatusOptions,
   fitnessGoalOptions,
@@ -539,11 +542,6 @@ function weeklyClassStyle(gymClass: AnyRow, index: number) {
   };
 }
 
-function defaultBranchId(user: AnyRow | null | undefined, branches: AnyRow[]) {
-  if (user?.branch_id) return String(user.branch_id);
-  return branches[0]?.id ? String(branches[0].id) : "";
-}
-
 function hasAssignedBranch(row: AnyRow) {
   return row.branch_id != null && String(row.branch_id) !== "";
 }
@@ -743,7 +741,6 @@ export function GymPage() {
   const [productSales, setProductSales] = useState<AnyRow[]>([]);
   const [productMovements, setProductMovements] = useState<AnyRow[]>([]);
   const [productBranchFilter, setProductBranchFilter] = useState("");
-  const [financeBranchFilter, setFinanceBranchFilter] = useState("");
   const [notifications, setNotifications] = useState<AnyRow[]>([]);
   const [saas, setSaas] = useState<AnyRow>({ tenants: [], users: [], modules: [], roles: [], branches: [] });
   const [memberForm, setMemberForm] = useState<AnyRow>(emptyMember);
@@ -867,6 +864,16 @@ export function GymPage() {
     setMobileMenuOpen(false);
   }
 
+  async function loadMemberships() {
+    try {
+      const response = await httpClient.get("/api/gym/memberships", silentRequest);
+      setMemberships(Array.isArray(response.data) ? response.data : []);
+    } catch (error) {
+      console.error("No se pudieron cargar las membresías:", error);
+      notify("No se pudieron cargar las membresías.", "warning");
+    }
+  }
+
   async function loadAll() {
     const results = await Promise.allSettled([
       httpClient.get("/api/gym/dashboard", silentRequest),
@@ -875,8 +882,8 @@ export function GymPage() {
       httpClient.get("/api/gym/plans", silentRequest),
       httpClient.get("/api/gym/members", { ...silentRequest, params: { search: memberSearch, status: memberStatusFilter, branch_id: memberBranchFilter, page: membersPage, per_page: membersPerPage } }),
       httpClient.get("/api/gym/memberships", silentRequest),
-      httpClient.get("/api/gym/payments", { ...silentRequest, params: { branch_id: financeBranchFilter || undefined } }),
-      httpClient.get("/api/gym/expenses", { ...silentRequest, params: { branch_id: financeBranchFilter || undefined } }),
+      httpClient.get("/api/gym/payments", silentRequest),
+      httpClient.get("/api/gym/expenses", silentRequest),
       httpClient.get("/api/gym/attendance", silentRequest),
       httpClient.get("/api/gym/classes", silentRequest),
       httpClient.get("/api/gym/training-subscriptions", silentRequest),
@@ -914,6 +921,9 @@ export function GymPage() {
     if (failed.length) {
       console.error("Algunos módulos no cargaron:", failed);
     }
+    if (results[5]?.status === "rejected") {
+      void loadMemberships();
+    }
 
     if (user?.is_superadmin) {
       try {
@@ -927,7 +937,13 @@ export function GymPage() {
 
   useEffect(() => {
     void loadAll();
-  }, [membersPage, membersPerPage, memberStatusFilter, memberBranchFilter, memberSearch, financeBranchFilter, productBranchFilter]);
+  }, [membersPage, membersPerPage, memberStatusFilter, memberBranchFilter, memberSearch, productBranchFilter]);
+
+  useEffect(() => {
+    if (tab === "memberships") {
+      void loadMemberships();
+    }
+  }, [tab]);
 
   useEffect(() => {
     if (!notifications.length || typeof Notification === "undefined" || Notification.permission !== "granted") return;
@@ -974,21 +990,21 @@ export function GymPage() {
   function openNewMember() {
     setEditingMemberId(null);
     setMemberModalContext("general");
-    setMemberForm({ ...emptyMember, branch_id: branches[0]?.id ? String(branches[0].id) : "" });
+    setMemberForm({ ...emptyMember, branch_id: defaultBranchId(user, branches) });
     setMemberModalOpen(true);
   }
 
   function openTrainingMemberModal() {
     setEditingMemberId(null);
     setMemberModalContext("training");
-    setMemberForm({ ...emptyMember, branch_id: branches[0]?.id ? String(branches[0].id) : "" });
+    setMemberForm({ ...emptyMember, branch_id: defaultBranchId(user, branches) });
     setMemberModalOpen(true);
   }
 
   function openMemberFromSale() {
     setEditingMemberId(null);
     setMemberModalContext("sale");
-    setMemberForm({ ...emptyMember, branch_id: branches[0]?.id ? String(branches[0].id) : "" });
+    setMemberForm({ ...emptyMember, branch_id: defaultBranchId(user, branches) });
     setMemberModalOpen(true);
   }
 
@@ -1024,7 +1040,7 @@ export function GymPage() {
 
   async function saveMember(event: FormEvent) {
     event.preventDefault();
-    const payload = { ...memberForm, document_number: memberForm.dni, branch_id: memberForm.branch_id || null };
+    const payload = { ...memberForm, document_number: memberForm.dni, branch_id: memberForm.branch_id || defaultBranchId(user, branches) || null };
     let savedMember: AnyRow | null = null;
     if (editingMemberId) {
       const response = await httpClient.put(`/api/gym/members/${editingMemberId}`, payload);
@@ -1749,7 +1765,7 @@ export function GymPage() {
               <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Sede</span><SearchableSelect value={memberBranchFilter} onChange={(value) => { setMembersPage(1); setMemberBranchFilter(value); }} options={branchOptions(branches)} emptyOption={{ value: "", label: "Todas" }} className={fieldClass()} /></label>
               <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Registros por página</span><SearchableSelect value={String(membersPerPage)} onChange={(value) => { setMembersPage(1); setMembersPerPage(Number(value)); }} options={pageSizeOptions} className={fieldClass()} /></label>
             </div>
-            <DataTable title="Socios registrados" rows={members} columns={["member_code", "dni", "first_name", "last_name", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<><IconButton title="Credencial digital" onClick={() => setCredentialMember(row)} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><QrCode className="h-4 w-4" /></IconButton><button onClick={() => void checkIn(row.id)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Ingreso</button><button onClick={() => void openMemberMemberships(row)} className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-700">Membresías</button></>} />} />
+            <DataTable title="Socios registrados" rows={members} columns={["member_code", "dni", "first_name", "last_name", "phone", "status", "branch_name"]} action={(row) => <ActionButtons onEdit={() => openEditMember(row)} onDelete={() => confirmDeleteMember(row)} extra={<><IconButton title="Credencial digital" onClick={() => setCredentialMember(row)} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><QrCode className="h-4 w-4" /></IconButton><IconButton title="Registrar ingreso" onClick={() => void checkIn(row.id)} className="bg-[#ffcc00] text-zinc-950"><LogIn className="h-4 w-4" /></IconButton><IconButton title="Membresías" onClick={() => void openMemberMemberships(row)} className="bg-blue-50 text-blue-700 ring-1 ring-blue-200"><IdCard className="h-4 w-4" /></IconButton></>} />} />
             <div className="mt-4 flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
               <p className="text-zinc-500">Mostrando {members.length} de {memberTotal} resultados</p>
               <div className="flex flex-wrap items-center gap-2">
@@ -1765,7 +1781,7 @@ export function GymPage() {
           {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} /> : null}
           {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); setProductSaleForm({ ...emptyProductSale, sale_date: new Date().toISOString().slice(0, 10) }); setProductSaleModalOpen(true); }} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos." onNew={openNewEquipment} newLabel="Nuevo equipo"><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} action={(row) => <ActionButtons onEdit={() => openEditEquipment(row)} onDelete={() => confirmDeleteEquipment(row)} />} /></Module> : null}
-          {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} branches={branches} branchFilter={financeBranchFilter} onBranchFilterChange={setFinanceBranchFilter} onNewIncome={() => { setIncomeForm((current) => ({ ...current, branch_id: defaultBranchId(user, branches), payment_methods: defaultPaymentMethods(String(current.amount || "")) })); setIncomeModalOpen(true); }} onNewExpense={() => setExpenseModalOpen(true)} onCollectPayment={openCollectPayment} onViewMembership={openMembershipFromCash} /> : null}
+          {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} onNewIncome={() => { setIncomeForm((current) => ({ ...current, branch_id: defaultBranchId(user, branches), payment_methods: defaultPaymentMethods(String(current.amount || "")) })); setIncomeModalOpen(true); }} onNewExpense={() => setExpenseModalOpen(true)} onCollectPayment={openCollectPayment} onViewMembership={openMembershipFromCash} /> : null}
           {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} onNotify={notify} /> : null}
         </section>
       </main>
@@ -1789,7 +1805,7 @@ export function GymPage() {
       <TrainingSubscriptionModal open={trainingSubscriptionModalOpen} editing={Boolean(editingTrainingSubscriptionId)} form={trainingSubscriptionForm} members={members} onCreateMember={openTrainingMemberModal} onChange={setTrainingSubscriptionForm} onClose={() => { setEditingTrainingSubscriptionId(null); setTrainingSubscriptionModalOpen(false); }} onSubmit={saveTrainingSubscription} />
       <TrainingSubscriptionDetailModal subscription={trainingSubscriptionDetail} onClose={() => setTrainingSubscriptionDetail(null)} onEdit={(subscription) => { setTrainingSubscriptionDetail(null); openEditTrainingSubscription(subscription); }} />
       <MemberCredentialModal member={credentialMember} membership={credentialMember ? memberActiveMembership(credentialMember, memberships) : null} onClose={() => setCredentialMember(null)} onCheckIn={(memberId) => void checkIn(memberId)} />
-      <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => { setMemberModalOpen(false); setMemberModalContext("general"); }} onSubmit={saveMember} stacked />
+      <MemberModal open={memberModalOpen} editing={Boolean(editingMemberId)} user={user} form={memberForm} branches={branches} fitnessGoals={fitnessGoals} onCreateGoal={createFitnessGoal} onChange={setMemberForm} onSearchDni={lookupDni} onClose={() => { setMemberModalOpen(false); setMemberModalContext("general"); }} onSubmit={saveMember} stacked />
       <ConfirmModal state={confirm} onClose={() => setConfirm(null)} />
       <ErrorModal state={errorModal} onClose={() => setErrorModal(null)} onGoToLogin={goToLogin} />
     </div>
@@ -2061,7 +2077,7 @@ function CashMovementsPanel({ movements, filteredMovements, dateFrom, dateTo, pe
   );
 }
 
-function FinanceModule({ movements, payments, expenses, branches, branchFilter, onBranchFilterChange, onNewIncome, onNewExpense, onCollectPayment, onViewMembership }: { movements: AnyRow[]; payments: AnyRow[]; expenses: AnyRow[]; branches: AnyRow[]; branchFilter: string; onBranchFilterChange: (value: string) => void; onNewIncome: () => void; onNewExpense: () => void; onCollectPayment: (payment: AnyRow) => void; onViewMembership: (movement: AnyRow) => void }) {
+function FinanceModule({ movements, payments, expenses, onNewIncome, onNewExpense, onCollectPayment, onViewMembership }: { movements: AnyRow[]; payments: AnyRow[]; expenses: AnyRow[]; onNewIncome: () => void; onNewExpense: () => void; onCollectPayment: (payment: AnyRow) => void; onViewMembership: (movement: AnyRow) => void }) {
   const defaultRange = useMemo(() => currentMonthDateRange(), []);
   const [dateFrom, setDateFrom] = useState(defaultRange.from);
   const [dateTo, setDateTo] = useState(defaultRange.to);
@@ -2100,9 +2116,6 @@ function FinanceModule({ movements, payments, expenses, branches, branchFilter, 
         <MetricCard title="Gastos registrados" value={money(totalExpenses)} />
         <MetricCard title="Cuentas por cobrar" value={money(accountsReceivable)} />
         <MetricCard title="Cortesías" value={money(courtesyAmount)} />
-      </div>
-      <div className="grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-[minmax(0,1fr)_auto]">
-        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Filtrar por sede</span><SearchableSelect value={branchFilter} onChange={onBranchFilterChange} options={branchOptions(branches)} emptyOption={{ value: "", label: "Todas mis sedes" }} className={fieldClass()} /></label>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {incomeByMethod.map((item) => <MetricCard key={item.method} title={cellTranslations.method[item.method]} value={money(item.amount)} />)}
@@ -2232,7 +2245,7 @@ function WeeklySchedule({ classes, weekdays, onEdit }: { classes: AnyRow[]; week
 }
 
 function ActionButtons({ onEdit, onDelete, onDetail, extra }: { onEdit?: () => void; onDelete?: () => void; onDetail?: () => void; extra?: ReactNode }) {
-  return <div className="flex flex-wrap justify-end gap-2">{extra}{onDetail ? <IconButton title="Ver detalles" onClick={onDetail} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><Eye className="h-4 w-4" /></IconButton> : null}{onEdit ? <IconButton title="Editar" onClick={onEdit} className="bg-zinc-950 text-white"><Edit3 className="h-4 w-4" /></IconButton> : null}{onDelete ? <IconButton title="Cancelar" onClick={onDelete} className="bg-red-50 text-red-700 ring-1 ring-red-100"><Trash2 className="h-4 w-4" /></IconButton> : null}</div>;
+  return <div className="flex flex-nowrap items-center justify-end gap-1.5">{extra}{onDetail ? <IconButton title="Ver detalles" onClick={onDetail} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><Eye className="h-4 w-4" /></IconButton> : null}{onEdit ? <IconButton title="Editar" onClick={onEdit} className="bg-zinc-950 text-white"><Edit3 className="h-4 w-4" /></IconButton> : null}{onDelete ? <IconButton title="Eliminar" onClick={onDelete} className="bg-red-50 text-red-700 ring-1 ring-red-100"><Trash2 className="h-4 w-4" /></IconButton> : null}</div>;
 }
 
 function IconButton({ title, onClick, className, children }: { title: string; onClick: () => void; className: string; children: ReactNode }) {
@@ -2256,8 +2269,8 @@ function DataTable({ title, rows, columns, action, bare }: { title?: string; row
       </div>
       <div className="hidden overflow-visible rounded-2xl border border-zinc-100 md:block">
         <table className="w-full table-fixed text-left text-sm">
-          <thead><tr className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">{columns.map((column) => <th key={column} className="px-3 py-3">{labels[column] ?? column}</th>)}{action ? <th className="w-28 overflow-visible px-3 py-3 text-right">Acciones</th> : null}</tr></thead>
-          <tbody>{rows.map((row) => <tr key={row.id} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/70">{columns.map((column) => <td key={column} className="overflow-hidden px-3 py-3 break-words">{formatCell(column, row[column], row)}</td>)}{action ? <td className="overflow-visible px-3 py-3">{action(row)}</td> : null}</tr>)}</tbody>
+          <thead><tr className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">{columns.map((column) => <th key={column} className="px-3 py-3">{labels[column] ?? column}</th>)}{action ? <th className="w-52 min-w-[13rem] overflow-visible px-3 py-3 text-right">Acciones</th> : null}</tr></thead>
+          <tbody>{rows.map((row) => <tr key={row.id} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/70">{columns.map((column) => <td key={column} className="overflow-hidden px-3 py-3 break-words">{formatCell(column, row[column], row)}</td>)}{action ? <td className="overflow-visible whitespace-nowrap px-3 py-3">{action(row)}</td> : null}</tr>)}</tbody>
         </table>
       </div>
     </div>
@@ -2269,8 +2282,19 @@ function Modal({ open, title, subtitle, children, onClose, stacked }: { open: bo
   return <div className={`fixed inset-0 ${stacked ? "z-[60]" : "z-50"} grid place-items-end bg-zinc-950/60 p-0 backdrop-blur-sm sm:place-items-center sm:p-4`}><div className="max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-3xl"><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black">{title}</h2>{subtitle ? <p className="mt-1 text-sm text-zinc-500">{subtitle}</p> : null}</div><button onClick={onClose} className="rounded-2xl bg-zinc-100 p-2 text-zinc-600"><X className="h-5 w-5" /></button></div>{children}</div></div>;
 }
 
-function MemberModal({ open, editing, form, branches, fitnessGoals, onCreateGoal, onChange, onSearchDni, onClose, onSubmit, stacked }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; fitnessGoals: AnyRow[]; onCreateGoal: (name: string) => Promise<void>; onChange: (form: AnyRow) => void; onSearchDni: (dni: string) => Promise<void>; onClose: () => void; onSubmit: (event: FormEvent) => void; stacked?: boolean }) {
+function MemberModal({ open, editing, user, form, branches, fitnessGoals, onCreateGoal, onChange, onSearchDni, onClose, onSubmit, stacked }: { open: boolean; editing: boolean; user: AnyRow | null; form: AnyRow; branches: AnyRow[]; fitnessGoals: AnyRow[]; onCreateGoal: (name: string) => Promise<void>; onChange: (form: AnyRow) => void; onSearchDni: (dni: string) => Promise<void>; onClose: () => void; onSubmit: (event: FormEvent) => void; stacked?: boolean }) {
   const [newGoal, setNewGoal] = useState("");
+  const branchSelectOptions = useMemo(() => memberBranchSelectOptions(user, branches), [user, branches]);
+  const branchLocked = isMemberBranchLocked(user, branches, editing);
+  const branchLabel = branchSelectOptions.find((item) => item.value === String(form.branch_id ?? ""))?.label ?? String(user?.branch_name ?? "");
+
+  useEffect(() => {
+    if (!open || editing) return;
+    const branchId = defaultBranchId(user, branches);
+    if (branchId && String(form.branch_id ?? "") !== branchId) {
+      onChange({ ...form, branch_id: branchId });
+    }
+  }, [open, editing, user, branches, form.branch_id]);
 
   return (
     <Modal open={open} title={editing ? "Editar socio" : "Nuevo socio"} subtitle="Datos personales, búsqueda RENIEC y contacto de emergencia." onClose={onClose} stacked={stacked}>
@@ -2288,7 +2312,10 @@ function MemberModal({ open, editing, form, branches, fitnessGoals, onCreateGoal
             const required = ["first_name", "last_name", "phone"].includes(field);
             return <label key={field} className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel required={required}>{label}</RequiredLabel><input required={required} type={field === "birthdate" ? "date" : "text"} value={form[field] ?? ""} onChange={(event) => onChange({ ...form, [field]: event.target.value })} className={fieldClass()} /></label>;
           })}
-          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Sede</RequiredLabel><SearchableSelect required value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} options={branchOptions(branches)} className={fieldClass()} /></label>
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+            <RequiredLabel>Sede</RequiredLabel>
+            {branchLocked ? <input readOnly value={branchLabel} className={fieldClass("bg-zinc-100 text-zinc-700")} /> : <SearchableSelect required value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} options={branchSelectOptions} className={fieldClass()} />}
+          </label>
           {editing ? <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Estado</RequiredLabel><SearchableSelect required value={form.status ?? "active"} onChange={(value) => onChange({ ...form, status: value })} options={memberRecordStatusOptions} className={fieldClass()} /></label> : null}
         </div>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Objetivo físico<SearchableSelect value={form.fitness_goal ?? ""} onChange={(value) => onChange({ ...form, fitness_goal: value })} options={fitnessGoalOptions(fitnessGoals)} emptyOption={{ value: "", label: "Sin objetivo seleccionado" }} className={fieldClass()} /></label>

@@ -106,6 +106,28 @@ export function branchOptions(branches: AnyRow[]): SearchableSelectOption[] {
   }));
 }
 
+export function defaultBranchId(user: AnyRow | null | undefined, branches: AnyRow[]): string {
+  if (user?.branch_id) return String(user.branch_id);
+  if (branches.length === 1) return String(branches[0].id);
+  return branches[0]?.id ? String(branches[0].id) : "";
+}
+
+export function memberBranchSelectOptions(user: AnyRow | null | undefined, branches: AnyRow[]): SearchableSelectOption[] {
+  const options = branchOptions(branches);
+  const preferredId = defaultBranchId(user, branches);
+  if (preferredId && !options.some((item) => item.value === preferredId)) {
+    return [{ value: preferredId, label: String(user?.branch_name ?? `Sede ${preferredId}`) }, ...options];
+  }
+  return options;
+}
+
+export function isMemberBranchLocked(user: AnyRow | null | undefined, branches: AnyRow[], editing: boolean): boolean {
+  if (editing) return false;
+  if (user?.is_superadmin && !user?.branch_id) return false;
+  if (user?.branch_id) return true;
+  return branches.length === 1;
+}
+
 export function tenantOptions(tenants: AnyRow[]): SearchableSelectOption[] {
   return tenants.map((tenant) => ({
     value: String(tenant.id),

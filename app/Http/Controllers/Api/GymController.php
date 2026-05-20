@@ -48,16 +48,44 @@ class GymController extends Controller
         return $this->tenantId($request) ?? DB::table('gym_tenants')->orderBy('id')->value('id');
     }
 
+    private function resolveTenantId(Request $request): ?int
+    {
+        return $this->tenantId($request) ?? $this->defaultTenantId($request);
+    }
+
     private function scopeTenant($query, Request $request, string $table)
     {
-        $tenantId = $this->tenantId($request);
-        if ($tenantId !== null) {
-            $query->where($table.'.tenant_id', $tenantId);
-        } elseif (! $this->isSystemAdmin($request->user())) {
-            $query->whereRaw('1 = 0');
+        $user = $request->user();
+        if ($this->isSystemAdmin($user) && $this->tenantId($request) === null) {
+            return $query;
         }
 
+        $tenantId = $this->resolveTenantId($request);
+        if ($tenantId === null) {
+            $query->whereRaw('1 = 0');
+
+            return $query;
+        }
+
+        if ($table === 'gym_memberships') {
+            $this->backfillMissingMembershipTenantIds($tenantId);
+        }
+
+        $query->where($table.'.tenant_id', $tenantId);
+
         return $query;
+    }
+
+    private function backfillMissingMembershipTenantIds(int $tenantId): void
+    {
+        DB::table('gym_memberships')
+            ->whereNull('tenant_id')
+            ->whereIn('member_id', function ($query) use ($tenantId) {
+                $query->select('id')
+                    ->from('gym_members')
+                    ->where('tenant_id', $tenantId);
+            })
+            ->update(['tenant_id' => $tenantId, 'updated_at' => now()]);
     }
 
     private function userBranchIds(Request $request): array
@@ -140,8 +168,13 @@ class GymController extends Controller
 
     private function syncSupersededMemberships(?int $tenantId = null, ?int $memberId = null): void
     {
+        $today = now()->toDateString();
         $query = DB::table('gym_memberships')
             ->whereIn('status', ['active', 'expired'])
+            ->where(function ($expiredOnly) use ($today) {
+                $expiredOnly->where('status', 'expired')
+                    ->orWhereDate('ends_on', '<', $today);
+            })
             ->whereExists(function ($sub) {
                 $sub->select(DB::raw(1))
                     ->from('gym_memberships as newer')
@@ -881,7 +914,7 @@ class GymController extends Controller
 
     public function memberships(Request $request): JsonResponse
     {
-        $tenantId = $this->defaultTenantId($request);
+        $tenantId = $this->resolveTenantId($request);
         $this->refreshExpiredMemberships($tenantId);
 
         $query = $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
