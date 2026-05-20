@@ -1064,6 +1064,18 @@ export function GymPage() {
     await loadAll();
   }
 
+  function confirmDeleteAttendance(record: AnyRow) {
+    setConfirm({
+      title: "Eliminar acceso",
+      body: `¿Eliminar el ingreso de ${record.member_name ?? "este socio"} del ${formatDateTime(record.checked_in_at)}?`,
+      onConfirm: async () => {
+        const response = await httpClient.delete(`/api/gym/attendance/${record.id}`);
+        setMessage(response.data?.message ?? "Acceso eliminado correctamente.");
+        await loadAll();
+      },
+    });
+  }
+
   function confirmDeletePlan(plan: AnyRow) {
     setConfirm({
       title: "Eliminar plan",
@@ -1575,7 +1587,7 @@ export function GymPage() {
           </Module> : null}
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
           {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "branch_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => <ActionButtons onEdit={() => openEditMembership(row)} onDelete={() => confirmDeleteMembership(row)} />} /></Module> : null}
-          {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} /></Module> : null}
+          {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} action={(row) => <ActionButtons onDelete={() => confirmDeleteAttendance(row)} />} /></Module> : null}
           {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} /> : null}
           {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); setProductSaleForm({ ...emptyProductSale, sale_date: new Date().toISOString().slice(0, 10) }); setProductSaleModalOpen(true); }} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos." onNew={openNewEquipment} newLabel="Nuevo equipo"><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} action={(row) => <ActionButtons onEdit={() => openEditEquipment(row)} onDelete={() => confirmDeleteEquipment(row)} />} /></Module> : null}

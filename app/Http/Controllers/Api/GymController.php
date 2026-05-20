@@ -1573,6 +1573,20 @@ class GymController extends Controller
         return response()->json($query->limit(80)->get());
     }
 
+    public function destroyAttendance(Request $request, int $attendance): JsonResponse
+    {
+        $row = $this->scopeTenant(DB::table('gym_attendances')->where('id', $attendance), $request, 'gym_attendances')->first();
+        abort_unless($row !== null, 404, 'Registro de acceso no encontrado.');
+
+        $this->assertMemberAccessible($request, (int) $row->member_id);
+        DB::table('gym_attendances')->where('id', $attendance)->delete();
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Acceso eliminado correctamente.',
+        ]);
+    }
+
     public function classes(Request $request): JsonResponse
     {
         $query = $this->scopeTenant(DB::table('gym_classes'), $request, 'gym_classes')

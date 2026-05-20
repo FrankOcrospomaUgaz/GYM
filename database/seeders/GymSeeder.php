@@ -112,9 +112,8 @@ class GymSeeder extends Seeder
         );
 
         $branchId = DB::table('gym_branches')->updateOrInsert(
-            ['name' => 'Smart Gym Central'],
+            ['tenant_id' => $tenantId, 'name' => 'Smart Gym Central'],
             [
-                'tenant_id' => $tenantId,
                 'phone' => '014455566',
                 'email' => 'central@gym.local',
                 'address' => 'Av. Principal 123',
@@ -126,11 +125,10 @@ class GymSeeder extends Seeder
                 'updated_at' => now(),
             ]
         );
-        $branchId = DB::table('gym_branches')->where('name', 'Smart Gym Central')->value('id');
+        $branchId = DB::table('gym_branches')->where('tenant_id', $tenantId)->where('name', 'Smart Gym Central')->value('id');
         DB::table('gym_branches')->updateOrInsert(
-            ['name' => 'Dojo MMA Norte'],
+            ['tenant_id' => $dojoTenantId, 'name' => 'Dojo MMA Norte'],
             [
-                'tenant_id' => $dojoTenantId,
                 'phone' => '014477889',
                 'email' => 'norte@dojo.local',
                 'address' => 'Av. Los Luchadores 450',
@@ -142,7 +140,7 @@ class GymSeeder extends Seeder
                 'updated_at' => now(),
             ]
         );
-        $dojoBranchId = DB::table('gym_branches')->where('name', 'Dojo MMA Norte')->value('id');
+        $dojoBranchId = DB::table('gym_branches')->where('tenant_id', $dojoTenantId)->where('name', 'Dojo MMA Norte')->value('id');
 
         User::query()->whereIn('email', ['trainer@gym.local', 'recepcion@gym.local'])->update(['branch_id' => $branchId]);
         $trainer->forceFill(['branch_id' => $branchId])->save();
@@ -186,9 +184,9 @@ class GymSeeder extends Seeder
 
         foreach ($plans as [$name, $code, $price, $days, $grace, $limit, $classes, $trainerIncluded, $description]) {
             DB::table('gym_plans')->updateOrInsert(
-                ['code' => $code],
-                compact('name') + [
-                    'tenant_id' => $tenantId,
+                ['tenant_id' => $tenantId, 'code' => $code],
+                [
+                    'name' => $name,
                     'price' => $price,
                     'duration_days' => $days,
                     'grace_days' => $grace,
@@ -254,59 +252,104 @@ class GymSeeder extends Seeder
             );
         }
 
-        $planIds = DB::table('gym_plans')->pluck('id', 'code');
-        $members = DB::table('gym_members')->get();
+        $members = DB::table('gym_members')->where('tenant_id', $tenantId)->orderBy('member_code')->get();
+        $demoMemberIds = $members->pluck('id')->all();
+
+        if ($demoMemberIds !== []) {
+            DB::table('gym_payments')
+                ->where('tenant_id', $tenantId)
+                ->whereIn('member_id', $demoMemberIds)
+                ->where(function ($query): void {
+                    $query->where('receipt_number', 'like', 'DEMO-%')
+                        ->orWhere('receipt_number', 'like', 'B001-%')
+                        ->orWhere('notes', 'Pago de membresía demo.')
+                        ->orWhere('notes', 'Pago de membresía.');
+                })
+                ->delete();
+
+            DB::table('gym_memberships')
+                ->where('tenant_id', $tenantId)
+                ->whereIn('member_id', $demoMemberIds)
+                ->where('notes', 'Alta generada por seeder.')
+                ->delete();
+        }
+
         foreach ($members as $index => $member) {
             $starts = Carbon::today()->subDays(20 - ($index * 4));
             $planCode = $index % 2 === 0 ? 'BLACK' : 'GO';
-            $plan = DB::table('gym_plans')->where('code', $planCode)->first();
+            $plan = DB::table('gym_plans')->where('tenant_id', $tenantId)->where('code', $planCode)->first();
+            if ($plan === null) {
+                continue;
+            }
+
             DB::table('gym_memberships')->updateOrInsert(
-                ['member_id' => $member->id, 'starts_on' => $starts->toDateString()],
                 [
                     'tenant_id' => $tenantId,
+                    'member_id' => $member->id,
+                    'notes' => 'Alta generada por seeder.',
+                ],
+                [
                     'plan_id' => $plan->id,
-                    'ends_on' => $starts->copy()->addDays($plan->duration_days)->toDateString(),
+                    'starts_on' => $starts->toDateString(),
+                    'ends_on' => $starts->copy()->addDays((int) $plan->duration_days)->toDateString(),
                     'price' => $plan->price,
                     'discount' => $index === 2 ? 10 : 0,
                     'status' => $member->status === 'active' ? 'active' : 'expired',
-                    'notes' => 'Alta generada por seeder.',
                     'sold_by' => $admin->id,
                     'created_at' => now(),
                     'updated_at' => now(),
                 ]
             );
-            $membership = DB::table('gym_memberships')->where('member_id', $member->id)->orderByDesc('id')->first();
+
+            $membership = DB::table('gym_memberships')
+                ->where('tenant_id', $tenantId)
+                ->where('member_id', $member->id)
+                ->where('notes', 'Alta generada por seeder.')
+                ->first();
+
+            $paymentPayload = [
+                'tenant_id' => $tenantId,
+                'branch_id' => $branchId,
+                'member_id' => $member->id,
+                'membership_id' => $membership?->id,
+                'amount' => $plan->price - ($index === 2 ? 10 : 0),
+                'method' => $index % 2 === 0 ? 'card' : 'cash',
+                'status' => 'paid',
+                'paid_on' => $starts->toDateString(),
+                'notes' => 'Pago de membresía demo.',
+                'registered_by' => $admin->id,
+                'updated_at' => now(),
+            ];
+
             DB::table('gym_payments')->updateOrInsert(
-                ['receipt_number' => 'B001-'.str_pad((string) $member->id, 5, '0', STR_PAD_LEFT)],
+                ['receipt_number' => 'DEMO-'.str_pad((string) $member->id, 5, '0', STR_PAD_LEFT)],
+                $paymentPayload + ['created_at' => now()]
+            );
+        }
+
+        DB::table('gym_attendances')
+            ->where('tenant_id', $tenantId)
+            ->where('notes', 'Ingreso demo.')
+            ->delete();
+
+        foreach ($members->take(4) as $index => $member) {
+            $checkedInAt = Carbon::today()->setTime(18, 0)->addMinutes($index * 15);
+            DB::table('gym_attendances')->updateOrInsert(
                 [
                     'tenant_id' => $tenantId,
                     'member_id' => $member->id,
-                    'membership_id' => $membership?->id,
-                    'amount' => $plan->price - ($index === 2 ? 10 : 0),
-                    'method' => $index % 2 === 0 ? 'card' : 'cash',
-                    'status' => 'paid',
-                    'paid_on' => $starts->toDateString(),
-                    'notes' => 'Pago de membresía.',
+                    'notes' => 'Ingreso demo.',
+                ],
+                [
+                    'branch_id' => $branchId,
+                    'checked_in_at' => $checkedInAt,
+                    'source' => 'manual',
+                    'result' => 'allowed',
                     'registered_by' => $admin->id,
                     'created_at' => now(),
                     'updated_at' => now(),
                 ]
             );
-        }
-
-        foreach ($members->take(4) as $member) {
-            DB::table('gym_attendances')->insertOrIgnore([
-                'tenant_id' => $tenantId,
-                'member_id' => $member->id,
-                'branch_id' => $branchId,
-                'checked_in_at' => Carbon::now()->subHours(rand(1, 8)),
-                'source' => 'manual',
-                'result' => 'allowed',
-                'notes' => 'Ingreso demo.',
-                'registered_by' => $admin->id,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
         }
 
         foreach ([
@@ -318,9 +361,8 @@ class GymSeeder extends Seeder
             ['Brazilian Jiu-Jitsu', 'Grappling', 'Todos', 'Jueves', '20:00', '21:30', 20, '#2563eb', 'Tatami'],
         ] as [$name, $category, $level, $weekday, $startsAt, $endsAt, $capacity, $color, $room]) {
             DB::table('gym_classes')->updateOrInsert(
-                ['name' => $name, 'weekday' => $weekday, 'starts_at' => $startsAt],
+                ['tenant_id' => $tenantId, 'name' => $name, 'weekday' => $weekday, 'starts_at' => $startsAt],
                 [
-                    'tenant_id' => $tenantId,
                     'category' => $category,
                     'level' => $level,
                     'branch_id' => $branchId,
@@ -343,9 +385,8 @@ class GymSeeder extends Seeder
             ['Bicicleta spinning', 'EQ-003', 'maintenance', -2],
         ] as [$name, $code, $status, $days]) {
             DB::table('gym_equipment')->updateOrInsert(
-                ['code' => $code],
+                ['tenant_id' => $tenantId, 'code' => $code],
                 [
-                    'tenant_id' => $tenantId,
                     'name' => $name,
                     'branch_id' => $branchId,
                     'purchased_on' => Carbon::today()->subYear()->toDateString(),
@@ -386,8 +427,8 @@ class GymSeeder extends Seeder
             ['Jiu-Jitsu No Gi', 'Grappling', 'Todos', 'Viernes', '19:30', '21:00', 20, '#2563eb', 'Tatami'],
         ] as [$name, $category, $level, $weekday, $startsAt, $endsAt, $capacity, $color, $room]) {
             DB::table('gym_classes')->updateOrInsert(
-                ['name' => $name, 'weekday' => $weekday, 'starts_at' => $startsAt],
-                ['tenant_id' => $dojoTenantId, 'category' => $category, 'level' => $level, 'branch_id' => $dojoBranchId, 'room' => $room, 'trainer_id' => $dojoAdmin->id, 'ends_at' => $endsAt, 'capacity' => $capacity, 'color' => $color, 'description' => 'Clase demo para cliente SaaS de artes marciales.', 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]
+                ['tenant_id' => $dojoTenantId, 'name' => $name, 'weekday' => $weekday, 'starts_at' => $startsAt],
+                ['category' => $category, 'level' => $level, 'branch_id' => $dojoBranchId, 'room' => $room, 'trainer_id' => $dojoAdmin->id, 'ends_at' => $endsAt, 'capacity' => $capacity, 'color' => $color, 'description' => 'Clase demo para cliente SaaS de artes marciales.', 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]
             );
         }
     }
