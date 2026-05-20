@@ -690,6 +690,7 @@ export function GymPage() {
   const [membershipEditForm, setMembershipEditForm] = useState<AnyRow>(emptyMembershipEdit);
   const [editingMembershipId, setEditingMembershipId] = useState<number | null>(null);
   const [membershipViewOpen, setMembershipViewOpen] = useState(false);
+  const [membershipViewLoading, setMembershipViewLoading] = useState(false);
   const [membershipViewData, setMembershipViewData] = useState<AnyRow | null>(null);
   const [stockPurchaseForm, setStockPurchaseForm] = useState<AnyRow>(emptyStockPurchase);
   const [collectPaymentForm, setCollectPaymentForm] = useState<AnyRow>(emptyCollectPayment);
@@ -1052,11 +1053,25 @@ export function GymPage() {
   }
 
   async function openMembershipFromCash(movement: AnyRow) {
-    const membershipId = movement.membership_id;
+    const membershipId = Number(movement.membership_id);
     if (!membershipId) return;
-    const response = await httpClient.get(`/api/gym/memberships/${membershipId}`);
-    setMembershipViewData(response.data);
     setMembershipViewOpen(true);
+    setMembershipViewLoading(true);
+    setMembershipViewData({
+      member_name: movement.member_name,
+      plan_name: movement.membership_plan_name,
+      branch_name: movement.branch_name,
+      starts_on: movement.membership_starts_on,
+      ends_on: movement.membership_ends_on,
+    });
+    try {
+      const response = await httpClient.get(`/api/gym/memberships/${membershipId}`);
+      setMembershipViewData(response.data);
+    } catch {
+      notify("No se pudo cargar el detalle completo de la membresía.", "warning");
+    } finally {
+      setMembershipViewLoading(false);
+    }
   }
 
   function confirmDeleteMembership(membership: AnyRow) {
@@ -1673,7 +1688,7 @@ export function GymPage() {
       <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} renewFrom={renewingMembership} onChange={setSaleForm} onClose={closeSaleModal} onSubmit={sellMembership} />
       <MemberMembershipModal open={memberMembershipModalOpen} member={selectedMember} rows={memberMemberships} saleForm={saleForm} plans={plans} onSaleChange={setSaleForm} onClose={() => setMemberMembershipModalOpen(false)} onSubmit={sellMembership} onDeleteMembership={confirmDeleteMembership} onEditMembership={openEditMembership} onRenew={openRenewMembership} />
       <EditMembershipModal open={membershipEditModalOpen} form={membershipEditForm} plans={plans} onChange={setMembershipEditForm} onClose={() => { setMembershipEditModalOpen(false); setEditingMembershipId(null); }} onSubmit={saveMembershipEdit} />
-      <MembershipDetailModal open={membershipViewOpen} membership={membershipViewData} onClose={() => { setMembershipViewOpen(false); setMembershipViewData(null); }} />
+      <MembershipDetailModal open={membershipViewOpen} loading={membershipViewLoading} membership={membershipViewData} onClose={() => { setMembershipViewOpen(false); setMembershipViewLoading(false); setMembershipViewData(null); }} />
       <IncomeModal open={incomeModalOpen} form={incomeForm} branches={branches} onChange={setIncomeForm} onClose={() => setIncomeModalOpen(false)} onSubmit={saveExternalIncome} />
       <CollectPaymentModal open={collectPaymentModalOpen} payment={selectedReceivable} form={collectPaymentForm} onChange={setCollectPaymentForm} onClose={() => { setCollectPaymentModalOpen(false); setSelectedReceivable(null); }} onSubmit={saveCollectPayment} />
       <StockPurchaseModal open={stockPurchaseModalOpen} product={selectedProduct} form={stockPurchaseForm} onChange={setStockPurchaseForm} onClose={() => { setStockPurchaseModalOpen(false); setSelectedProduct(null); }} onSubmit={saveStockPurchase} />
@@ -1967,8 +1982,8 @@ function FinanceModule({ movements, payments, expenses, branches, branchFilter, 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {incomeByMethod.map((item) => <MetricCard key={item.method} title={cellTranslations.method[item.method]} value={money(item.amount)} />)}
       </div>
-      <DataTable title="Cuentas por cobrar" rows={receivables} columns={["receipt_number", "payer_name", "amount", "amount_paid", "balance_due", "due_on", "status", "branch_name"]} action={(row) => Number(row.balance_due ?? 0) > 0 ? <button type="button" onClick={() => onCollectPayment(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Cobrar</button> : null} />
-      <DataTable title="Movimientos de caja" rows={movements} columns={["movement_type", "concept", "member_name", "amount", "balance_due", "method", "movement_date", "status", "branch_name"]} action={(row) => <div className="flex flex-wrap justify-end gap-2">{row.membership_id ? <button type="button" onClick={() => onViewMembership(row)} className="rounded-xl bg-white px-3 py-2 text-xs font-black text-zinc-950 ring-1 ring-zinc-200">Ver membresía</button> : null}{["pending", "credit", "partial"].includes(String(row.status)) && Number(row.balance_due ?? 0) > 0 ? <button type="button" onClick={() => onCollectPayment(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Cobrar</button> : null}</div>} />
+      <DataTable title="Cuentas por cobrar" rows={receivables} columns={["receipt_number", "payer_name", "amount", "amount_paid", "balance_due", "due_on", "status", "branch_name"]} action={(row) => Number(row.balance_due ?? 0) > 0 ? <IconButton title="Cobrar saldo" onClick={() => onCollectPayment(row)} className="bg-[#ffcc00] text-zinc-950"><Banknote className="h-4 w-4" /></IconButton> : null} />
+      <DataTable title="Movimientos de caja" rows={movements} columns={["movement_type", "concept", "member_name", "amount", "balance_due", "method", "movement_date", "status", "branch_name"]} action={(row) => <div className="flex flex-wrap justify-end gap-2">{row.membership_id ? <IconButton title="Ver membresía" onClick={() => void onViewMembership(row)} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><IdCard className="h-4 w-4" /></IconButton> : null}{["pending", "credit", "partial"].includes(String(row.status)) && Number(row.balance_due ?? 0) > 0 ? <IconButton title="Cobrar saldo" onClick={() => onCollectPayment(row)} className="bg-[#ffcc00] text-zinc-950"><Banknote className="h-4 w-4" /></IconButton> : null}</div>} />
     </div>
   );
 }
@@ -2921,10 +2936,11 @@ function EditMembershipModal({ open, form, plans, onChange, onClose, onSubmit }:
   );
 }
 
-function MembershipDetailModal({ open, membership, onClose }: { open: boolean; membership: AnyRow | null; onClose: () => void }) {
-  if (!membership) return null;
+function MembershipDetailModal({ open, membership, loading, onClose }: { open: boolean; membership: AnyRow | null; loading?: boolean; onClose: () => void }) {
   return (
-    <Modal open={open} title="Membresía vinculada" subtitle={membership.member_name ? String(membership.member_name) : "Detalle del pago"} onClose={onClose}>
+    <Modal open={open} title="Membresía vinculada" subtitle={membership?.member_name ? String(membership.member_name) : "Detalle del pago"} onClose={onClose}>
+      {loading ? <p className="rounded-2xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-500">Cargando detalle...</p> : null}
+      {!loading && membership ? (
       <div className="grid gap-3 rounded-2xl bg-zinc-50 p-4 text-sm">
         <p><span className="font-black text-zinc-500">Socio:</span> {membership.member_name ?? "-"}</p>
         <p><span className="font-black text-zinc-500">Plan:</span> {membership.plan_name ?? "-"}</p>
@@ -2936,6 +2952,8 @@ function MembershipDetailModal({ open, membership, onClose }: { open: boolean; m
         <p><span className="font-black text-zinc-500">Estado:</span> {cellTranslations.status[String(membership.display_status ?? membership.status)] ?? membership.status}</p>
         {membership.notes ? <p><span className="font-black text-zinc-500">Notas:</span> {membership.notes}</p> : null}
       </div>
+      ) : null}
+      {!loading && !membership ? <p className="rounded-2xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-500">No se encontró la membresía vinculada.</p> : null}
       <div className="mt-4 flex justify-end"><button type="button" onClick={onClose} className="rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-black text-white">Cerrar</button></div>
     </Modal>
   );

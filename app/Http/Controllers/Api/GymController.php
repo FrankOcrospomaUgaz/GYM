@@ -772,7 +772,8 @@ class GymController extends Controller
         abort_unless($plan !== null, 422, 'El plan no pertenece al cliente activo.');
         abort_unless((bool) ($plan->is_active ?? true), 422, 'El plan no está activo para ventas.');
         $member = DB::table('gym_members')->where('id', $data['member_id'])->first();
-        abort_unless($member !== null && (string) $member->status !== 'inactive', 422, 'El socio está inactivo o no existe.');
+        abort_unless($member !== null, 422, 'El socio no existe.');
+        abort_if((string) $member->status === 'blocked', 422, 'El socio está bloqueado. Desbloquéelo antes de registrar la membresía.');
         $starts = Carbon::parse($data['starts_on']);
         $endsOn = $starts->copy()->addDays((int) $plan->duration_days)->toDateString();
         $data['notes'] = filled($data['notes'] ?? null) ? trim((string) $data['notes']) : null;
@@ -790,7 +791,14 @@ class GymController extends Controller
 
         $this->refreshExpiredMemberships($tenantId, (int) $data['member_id']);
 
-        return DB::transaction(function () use ($request, $data, $plan, $tenantId, $starts, $endsOn, $discount, $amount, $proofPath, $paymentStatus, $branchId, $amountPaid, $paymentMethods): JsonResponse {
+        return DB::transaction(function () use ($request, $data, $plan, $tenantId, $starts, $endsOn, $discount, $amount, $proofPath, $paymentStatus, $branchId, $amountPaid, $paymentMethods, $member): JsonResponse {
+            if ((string) $member->status === 'inactive') {
+                DB::table('gym_members')->where('id', $data['member_id'])->update([
+                    'status' => 'active',
+                    'updated_at' => now(),
+                ]);
+            }
+
             $this->replaceConflictingMemberships((int) $data['member_id'], $starts->toDateString(), $endsOn);
             $membershipId = DB::table('gym_memberships')->insertGetId([
                 'tenant_id' => $tenantId,
