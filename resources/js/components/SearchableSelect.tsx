@@ -22,68 +22,75 @@ export function SearchableSelect({
   value,
   onChange,
   options,
-  placeholder = "Escriba para buscar...",
+  placeholder,
   emptyOption,
   required,
   disabled,
   className = "",
 }: SearchableSelectProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
-  const [text, setText] = useState("");
+  const [query, setQuery] = useState("");
+
+  const resolvedPlaceholder = placeholder ?? emptyOption?.label ?? "Escriba para buscar...";
 
   const selected = useMemo(() => {
-    if (emptyOption && String(emptyOption.value) === String(value)) return emptyOption;
+    if (emptyOption && String(emptyOption.value) === String(value)) return null;
+    if (value === "" || value == null) return null;
     return options.find((item) => String(item.value) === String(value)) ?? null;
   }, [options, value, emptyOption]);
 
+  const closedLabel = selected?.label ?? "";
+
   const filtered = useMemo(() => {
-    const q = text.trim().toLowerCase();
+    const q = query.trim().toLowerCase();
     const pool = emptyOption ? [emptyOption, ...options] : options;
     if (!q) return pool.slice(0, MAX_RESULTS);
     return pool.filter((item) => item.label.toLowerCase().includes(q)).slice(0, MAX_RESULTS);
-  }, [options, emptyOption, text]);
+  }, [options, emptyOption, query]);
+
+  const beginSearch = () => {
+    if (disabled) return;
+    setOpen(true);
+    setQuery("");
+  };
+
+  const closePicker = () => {
+    setOpen(false);
+    setQuery("");
+  };
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node)) closePicker();
     };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, []);
 
-  useEffect(() => {
-    if (!open) setText(selected?.label ?? "");
-  }, [open, selected?.label]);
-
   const pick = (next: string) => {
     onChange(next);
-    const item =
-      (emptyOption && String(emptyOption.value) === String(next) ? emptyOption : null) ??
-      options.find((option) => String(option.value) === String(next)) ??
-      null;
-    setText(item?.label ?? "");
-    setOpen(false);
+    closePicker();
   };
 
   return (
     <div ref={rootRef} className="relative">
       <input
+        ref={inputRef}
         type="text"
         disabled={disabled}
         className={className}
-        placeholder={placeholder}
-        value={open ? text : (selected?.label ?? "")}
+        placeholder={resolvedPlaceholder}
+        value={open ? query : closedLabel}
         onChange={(event) => {
-          setText(event.target.value);
+          setQuery(event.target.value);
           setOpen(true);
         }}
-        onFocus={() => {
-          setOpen(true);
-          setText("");
-        }}
+        onFocus={beginSearch}
+        onClick={beginSearch}
         onKeyDown={(event) => {
-          if (event.key === "Escape") setOpen(false);
+          if (event.key === "Escape") closePicker();
         }}
         autoComplete="off"
       />
@@ -111,4 +118,3 @@ export function SearchableSelect({
     </div>
   );
 }
-
