@@ -169,29 +169,37 @@ class GymController extends Controller
     private function syncSupersededMemberships(?int $tenantId = null, ?int $memberId = null): void
     {
         $today = now()->toDateString();
-        $query = DB::table('gym_memberships')
-            ->whereIn('status', ['active', 'expired'])
+        $idsQuery = DB::table('gym_memberships as old')
+            ->select('old.id')
+            ->whereIn('old.status', ['active', 'expired'])
             ->where(function ($expiredOnly) use ($today) {
-                $expiredOnly->where('status', 'expired')
-                    ->orWhereDate('ends_on', '<', $today);
+                $expiredOnly->where('old.status', 'expired')
+                    ->orWhereDate('old.ends_on', '<', $today);
             })
             ->whereExists(function ($sub) {
                 $sub->select(DB::raw(1))
                     ->from('gym_memberships as newer')
-                    ->whereColumn('newer.member_id', 'gym_memberships.member_id')
-                    ->whereColumn('newer.id', '<>', 'gym_memberships.id')
+                    ->whereColumn('newer.member_id', 'old.member_id')
+                    ->whereColumn('newer.id', '<>', 'old.id')
                     ->whereNotIn('newer.status', ['cancelled', 'replaced'])
-                    ->whereColumn('newer.starts_on', '>', 'gym_memberships.ends_on');
+                    ->whereColumn('newer.starts_on', '>', 'old.ends_on');
             });
 
         if ($tenantId !== null) {
-            $query->where('tenant_id', $tenantId);
+            $idsQuery->where('old.tenant_id', $tenantId);
         }
         if ($memberId !== null) {
-            $query->where('member_id', $memberId);
+            $idsQuery->where('old.member_id', $memberId);
         }
 
-        $query->update(['status' => 'replaced', 'updated_at' => now()]);
+        $ids = $idsQuery->pluck('old.id');
+        if ($ids->isEmpty()) {
+            return;
+        }
+
+        DB::table('gym_memberships')
+            ->whereIn('id', $ids)
+            ->update(['status' => 'replaced', 'updated_at' => now()]);
     }
 
     private function membershipDisplayStatus(object $membership): string
