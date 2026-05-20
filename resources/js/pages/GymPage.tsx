@@ -4,6 +4,7 @@ import { httpClient } from "../http/client";
 import { parseApiError, registerHttpErrorHandlers } from "../http/api-errors";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { PaymentMethodsFields } from "../components/PaymentMethodsFields";
+import { currentMonthRangeInLima, dateKeyInLima, formatGymDateTime, todayInLima } from "../lib/gymDates";
 import { appendPaymentMethodsToFormData, defaultPaymentMethods, normalizePaymentMethodLines, parsePaymentMethods, paymentMethodsLabel } from "../lib/paymentMethods";
 import { showToast, type ToastIcon } from "../lib/toast";
 import {
@@ -119,7 +120,7 @@ const emptyProductSale = {
   unit_price: "0",
   payment_method: "cash",
   payment_status: "paid",
-  sale_date: new Date().toISOString().slice(0, 10),
+  sale_date: todayInLima(),
   due_on: "",
   proof_photo: null as File | null,
   notes: "",
@@ -128,7 +129,7 @@ const emptyProductSale = {
 const emptyStockPurchase = {
   quantity: "1",
   unit_cost: "0",
-  purchased_on: new Date().toISOString().slice(0, 10),
+  purchased_on: todayInLima(),
   notes: "",
 };
 
@@ -137,7 +138,7 @@ const emptyCollectPayment = {
   amount: "",
   method: "cash",
   payment_methods: defaultPaymentMethods(),
-  paid_on: new Date().toISOString().slice(0, 10),
+  paid_on: todayInLima(),
   proof_photo: null as File | null,
   notes: "",
 };
@@ -170,7 +171,7 @@ const emptyTrainingSubscriptionForm = {
   member_id: "",
   discipline: "MMA",
   monthly_fee: "180",
-  starts_on: new Date().toISOString().slice(0, 10),
+  starts_on: todayInLima(),
   selected_days: [] as string[],
   day_schedules: {} as Record<string, { start: string; end: string }>,
   preferred_time: "19:00",
@@ -386,17 +387,7 @@ function StatusBadge({ value }: { value: string }) {
 }
 
 function formatDateTime(value: unknown) {
-  if (!value) return "-";
-  const text = String(value);
-  const date = new Date(text.includes("T") ? text : text.replace(" ", "T"));
-  if (Number.isNaN(date.getTime())) return text;
-  const hasTime = /\d{2}:\d{2}/.test(text);
-  return date.toLocaleDateString("es-PE", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    ...(hasTime ? { hour: "2-digit", minute: "2-digit" } : {}),
-  });
+  return formatGymDateTime(value);
 }
 
 function formatDateRangeLabel(value: string) {
@@ -406,37 +397,11 @@ function formatDateRangeLabel(value: string) {
 }
 
 function localDateKey(value: unknown) {
-  if (!value) return "";
-  const raw = String(value).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
-  if (match && !raw.includes("T")) return match[1];
-  const parsed = new Date(raw.includes("T") ? raw : raw.replace(" ", "T"));
-  if (Number.isNaN(parsed.getTime())) return match?.[1] ?? "";
-  return formatDateInput(parsed);
+  return dateKeyInLima(value);
 }
 
 function formatMovementDateTime(value: unknown) {
-  if (!value) return "-";
-  const raw = String(value).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    const date = new Date(`${raw}T12:00:00`);
-    return date.toLocaleDateString("es-PE", { day: "2-digit", month: "2-digit", year: "numeric" });
-  }
-  const parsed = new Date(raw.includes("T") ? raw : raw.replace(" ", "T"));
-  if (Number.isNaN(parsed.getTime())) return raw;
-  const hasTime = /\d{2}:\d{2}/.test(raw);
-  if (!hasTime && !raw.includes("T")) {
-    return parsed.toLocaleDateString("es-PE", { day: "2-digit", month: "2-digit", year: "numeric" });
-  }
-  return parsed.toLocaleString("es-PE", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-  });
+  return formatGymDateTime(value);
 }
 
 async function normalizeProofPhoto(file: File) {
@@ -505,18 +470,18 @@ function nextDateForWeekday(weekday: string) {
   const diff = target >= 0 ? (target - today.getDay() + 7) % 7 : 0;
   const date = new Date(today);
   date.setDate(today.getDate() + diff);
-  return date.toISOString().slice(0, 10);
+  return formatDateInput(date);
 }
 
 function buildMonthDays(baseDate: Date) {
   const weekdays = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
   const first = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
   const last = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0);
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = todayInLima();
   const days = [];
   for (let day = 1; day <= last.getDate(); day++) {
     const date = new Date(first.getFullYear(), first.getMonth(), day);
-    const iso = date.toISOString().slice(0, 10);
+    const iso = formatDateInput(date);
     days.push({
       iso,
       day,
@@ -608,7 +573,7 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
       membership_status: payment.membership_status,
       membership_price: payment.membership_price,
       membership_discount: payment.membership_discount,
-      movement_day: payment.paid_on ?? payment.due_on,
+      movement_day: payment.paid_on ?? payment.due_on ?? dateKeyInLima(payment.created_at),
       movement_at: payment.created_at ?? payment.paid_on ?? payment.due_on,
       movement_date: payment.created_at ?? payment.paid_on ?? payment.due_on,
       proof_url: payment.proof_url,
@@ -624,7 +589,7 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
       amount: -Number(expense.amount ?? 0),
       method: expense.payment_method,
       payment_methods: expense.payment_methods,
-      movement_day: expense.spent_on,
+      movement_day: expense.spent_on ?? dateKeyInLima(expense.created_at),
       movement_at: expense.created_at ?? expense.spent_on,
       movement_date: expense.created_at ?? expense.spent_on,
       proof_url: expense.proof_url,
@@ -649,8 +614,7 @@ function formatDateInput(date: Date) {
 }
 
 function currentMonthDateRange() {
-  const today = new Date();
-  return { from: formatDateInput(new Date(today.getFullYear(), today.getMonth(), 1)), to: formatDateInput(today) };
+  return currentMonthRangeInLima();
 }
 
 function isWithinDateRange(value: unknown, from: string, to: string) {
@@ -696,7 +660,7 @@ function membershipStatusForDisplay(row?: AnyRow, allRows?: AnyRow[]) {
   if (dbStatus === "replaced" || dbStatus === "cancelled") return dbStatus;
   let status = row.display_status ? String(row.display_status) : dbStatus;
   if (!row.display_status && dbStatus === "active") {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayInLima();
     if (String(row.ends_on ?? "") < today) status = "expired";
     else if (String(row.starts_on ?? "") > today) status = "pending";
     else status = "active";
@@ -733,7 +697,7 @@ function defaultSaleForm(overrides: AnyRow = {}): AnyRow {
   return {
     member_id: "",
     plan_id: "",
-    starts_on: new Date().toISOString().slice(0, 10),
+    starts_on: todayInLima(),
     discount: "0",
     method: "cash",
     payment_methods: defaultPaymentMethods(),
@@ -746,7 +710,7 @@ function defaultSaleForm(overrides: AnyRow = {}): AnyRow {
 }
 
 function renewStartsOn(endsOn: unknown) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInLima();
   const end = String(endsOn ?? "").slice(0, 10);
   if (!end || end < today) return today;
   return today;
@@ -795,7 +759,7 @@ export function GymPage() {
   const [productSaleForm, setProductSaleForm] = useState<AnyRow>(emptyProductSale);
   const [saleForm, setSaleForm] = useState<AnyRow>(() => defaultSaleForm());
   const [renewingMembership, setRenewingMembership] = useState<AnyRow | null>(null);
-  const [incomeForm, setIncomeForm] = useState<AnyRow>({ category: "Venta externa", concept: "", payer_name: "", branch_id: "", amount: "", paid_on: new Date().toISOString().slice(0, 10), due_on: "", method: "cash", payment_methods: defaultPaymentMethods(), status: "paid", proof_photo: null, notes: "" });
+  const [incomeForm, setIncomeForm] = useState<AnyRow>({ category: "Venta externa", concept: "", payer_name: "", branch_id: "", amount: "", paid_on: todayInLima(), due_on: "", method: "cash", payment_methods: defaultPaymentMethods(), status: "paid", proof_photo: null, notes: "" });
   const [membershipEditModalOpen, setMembershipEditModalOpen] = useState(false);
   const [membershipEditForm, setMembershipEditForm] = useState<AnyRow>(emptyMembershipEdit);
   const [editingMembershipId, setEditingMembershipId] = useState<number | null>(null);
@@ -805,7 +769,7 @@ export function GymPage() {
   const [stockPurchaseForm, setStockPurchaseForm] = useState<AnyRow>(emptyStockPurchase);
   const [collectPaymentForm, setCollectPaymentForm] = useState<AnyRow>(emptyCollectPayment);
   const [selectedReceivable, setSelectedReceivable] = useState<AnyRow | null>(null);
-  const [expenseForm, setExpenseForm] = useState<AnyRow>({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", payment_methods: defaultPaymentMethods(), proof_photo: null });
+  const [expenseForm, setExpenseForm] = useState<AnyRow>({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: todayInLima(), payment_method: "cash", payment_methods: defaultPaymentMethods(), proof_photo: null });
   const [classForm, setClassForm] = useState<AnyRow>(emptyClassForm);
   const [classModalOpen, setClassModalOpen] = useState(false);
   const [memberStatusFilter, setMemberStatusFilter] = useState<string>("");
@@ -817,7 +781,7 @@ export function GymPage() {
   const [classDetailOpen, setClassDetailOpen] = useState(false);
   const [selectedClass, setSelectedClass] = useState<AnyRow | null>(null);
   const [classBookings, setClassBookings] = useState<AnyRow[]>([]);
-  const [classBookingDate, setClassBookingDate] = useState(new Date().toISOString().slice(0, 10));
+  const [classBookingDate, setClassBookingDate] = useState(todayInLima());
   const [classBookingMemberId, setClassBookingMemberId] = useState("");
   const [trainingSubscriptionForm, setTrainingSubscriptionForm] = useState<AnyRow>(emptyTrainingSubscriptionForm);
   const [trainingSubscriptionModalOpen, setTrainingSubscriptionModalOpen] = useState(false);
@@ -1443,7 +1407,7 @@ export function GymPage() {
       product_id: String(product.id),
       unit_price: String(product.unit_price ?? "0"),
       quantity: "1",
-      sale_date: new Date().toISOString().slice(0, 10),
+      sale_date: todayInLima(),
     });
     setProductSaleModalOpen(true);
   }
@@ -1469,7 +1433,7 @@ export function GymPage() {
     setStockPurchaseForm({
       ...emptyStockPurchase,
       unit_cost: String(product.unit_cost ?? "0"),
-      purchased_on: new Date().toISOString().slice(0, 10),
+      purchased_on: todayInLima(),
     });
     setStockPurchaseModalOpen(true);
   }
@@ -1497,7 +1461,7 @@ export function GymPage() {
       payment_id: String(payment.payment_id ?? payment.id),
       amount: collectAmount,
       payment_methods: defaultPaymentMethods(collectAmount),
-      paid_on: new Date().toISOString().slice(0, 10),
+      paid_on: todayInLima(),
     });
     setCollectPaymentModalOpen(true);
   }
@@ -1556,7 +1520,7 @@ export function GymPage() {
     normalizePaymentMethodLines(expenseForm.payment_methods ?? defaultPaymentMethods(), Number(expenseForm.amount || 0));
     await appendFinanceFormData(formData, expenseForm, Number(expenseForm.amount || 0));
     await httpClient.post("/api/gym/expenses", formData);
-    setExpenseForm({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", payment_methods: defaultPaymentMethods(), proof_photo: null });
+    setExpenseForm({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: todayInLima(), payment_method: "cash", payment_methods: defaultPaymentMethods(), proof_photo: null });
     setExpenseModalOpen(false);
     notify("Gasto registrado.");
     await loadAll();
@@ -1568,7 +1532,7 @@ export function GymPage() {
     normalizePaymentMethodLines(incomeForm.payment_methods ?? defaultPaymentMethods(), Number(incomeForm.amount || 0));
     await appendFinanceFormData(formData, incomeForm, Number(incomeForm.amount || 0));
     await httpClient.post("/api/gym/payments", formData);
-    setIncomeForm({ category: "Venta externa", concept: "", payer_name: "", branch_id: defaultBranchId(user, branches), amount: "", paid_on: new Date().toISOString().slice(0, 10), due_on: "", method: "cash", payment_methods: defaultPaymentMethods(), status: "paid", proof_photo: null, notes: "" });
+    setIncomeForm({ category: "Venta externa", concept: "", payer_name: "", branch_id: defaultBranchId(user, branches), amount: "", paid_on: todayInLima(), due_on: "", method: "cash", payment_methods: defaultPaymentMethods(), status: "paid", proof_photo: null, notes: "" });
     setIncomeModalOpen(false);
     notify("Ingreso externo registrado.");
     await loadAll();
@@ -1686,7 +1650,7 @@ export function GymPage() {
       ...subscription,
       member_id: String(subscription.member_id ?? ""),
       monthly_fee: monthlyFee,
-      starts_on: String(subscription.starts_on ?? new Date().toISOString().slice(0, 10)),
+      starts_on: String(subscription.starts_on ?? todayInLima()),
       selected_days: subscription.selected_days ?? [],
       day_schedules: subscription.day_schedules ?? {},
       sessions_per_week: String(subscription.sessions_per_week ?? (subscription.selected_days?.length || 1)),
@@ -1830,7 +1794,7 @@ export function GymPage() {
           {tab === "memberships" ? <MembershipsModule rows={memberships} branches={branches} plans={plans} onNew={openNewSale} onRenew={openRenewMembership} onEdit={openEditMembership} onDelete={confirmDeleteMembership} /> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} action={(row) => <ActionButtons onDelete={() => confirmDeleteAttendance(row)} />} /></Module> : null}
           {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} /> : null}
-          {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); setProductSaleForm({ ...emptyProductSale, sale_date: new Date().toISOString().slice(0, 10) }); setProductSaleModalOpen(true); }} /> : null}
+          {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); setProductSaleForm({ ...emptyProductSale, sale_date: todayInLima() }); setProductSaleModalOpen(true); }} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos." onNew={openNewEquipment} newLabel="Nuevo equipo"><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} action={(row) => <ActionButtons onEdit={() => openEditEquipment(row)} onDelete={() => confirmDeleteEquipment(row)} />} /></Module> : null}
           {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} onNewIncome={() => { setIncomeForm((current) => ({ ...current, branch_id: defaultBranchId(user, branches), payment_methods: defaultPaymentMethods(String(current.amount || "")) })); setIncomeModalOpen(true); }} onNewExpense={() => setExpenseModalOpen(true)} onCollectPayment={openCollectPayment} onViewMembership={openMembershipFromCash} /> : null}
           {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} onNotify={notify} /> : null}
@@ -2146,7 +2110,7 @@ function FinanceModule({ movements, payments, expenses, onNewIncome, onNewExpens
   const accountsReceivable = receivables.reduce((sum, payment) => sum + Number(payment.balance_due ?? payment.amount ?? 0), 0);
   const courtesyAmount = branchScopedPayments.filter((payment) => payment.status === "courtesy").reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0);
   const filteredMovements = useMemo(
-    () => movements.filter((row) => isWithinDateRange(row.movement_day ?? row.movement_date, dateFrom, dateTo)),
+    () => movements.filter((row) => isWithinDateRange(row.movement_day ?? row.movement_at ?? row.movement_date, dateFrom, dateTo)),
     [movements, dateFrom, dateTo],
   );
   const periodIncome = filteredMovements.filter((row) => row.movement_type === "income").reduce((sum, row) => sum + Number(row.amount ?? 0), 0);
