@@ -3,6 +3,8 @@ import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit
 import { httpClient } from "../http/client";
 import { parseApiError, registerHttpErrorHandlers } from "../http/api-errors";
 import { SearchableSelect } from "../components/SearchableSelect";
+import { PaymentMethodsFields } from "../components/PaymentMethodsFields";
+import { appendPaymentMethodsToFormData, defaultPaymentMethods, normalizePaymentMethodLines, parsePaymentMethods, paymentMethodsLabel } from "../lib/paymentMethods";
 import {
   branchOptions,
   categoryOptions,
@@ -129,8 +131,17 @@ const emptyCollectPayment = {
   payment_id: "",
   amount: "",
   method: "cash",
+  payment_methods: defaultPaymentMethods(),
   paid_on: new Date().toISOString().slice(0, 10),
   proof_photo: null as File | null,
+  notes: "",
+};
+
+const emptyMembershipEdit = {
+  plan_id: "",
+  starts_on: "",
+  ends_on: "",
+  discount: "0",
   notes: "",
 };
 
@@ -172,6 +183,7 @@ const labels: Record<string, string> = {
   document_number: "Documento",
   phone: "Teléfono",
   status: "Estado",
+  display_status: "Estado",
   branch_name: "Sede",
   code: "Código",
   name: "Nombre",
@@ -256,6 +268,7 @@ const cellTranslations: Record<string, Record<string, string>> = {
     transfer: "Transferencia",
     yape: "Yape",
     plin: "Plin",
+    mixed: "Varios medios",
   },
   payment_method: {
     cash: "Efectivo",
@@ -263,6 +276,7 @@ const cellTranslations: Record<string, Record<string, string>> = {
     transfer: "Transferencia",
     yape: "Yape",
     plin: "Plin",
+    mixed: "Varios medios",
   },
   movement_type: {
     income: "Ingreso",
@@ -307,10 +321,13 @@ const cellTranslations: Record<string, Record<string, string>> = {
   },
 };
 
-function formatCell(column: string, value: unknown) {
+function formatCell(column: string, value: unknown, row?: AnyRow) {
   if (column === "proof_url") return value ? <a className="font-bold text-blue-700 underline" href={String(value)} target="_blank" rel="noreferrer">Ver foto</a> : "-";
   if (["checked_in_at", "checked_out_at", "paid_on", "starts_on", "ends_on", "next_maintenance_on"].includes(column)) return formatDateTime(value);
   if (column === "movement_date") return formatDateTime(value);
+  if (column === "method" || column === "payment_method") {
+    return paymentMethodsLabel(value, row?.payment_methods, (code) => cellTranslations.method[code] ?? code);
+  }
   if (column.includes("amount") || column === "price" || column === "discount") return money(value);
   if (column === "duration_days") return `${value ?? 0} días`;
   if (column === "grace_days") return `${value ?? 0} días`;
@@ -322,7 +339,7 @@ function formatCell(column: string, value: unknown) {
     const map = column === "type" ? cellTranslations.movement_type : cellTranslations.payment_status;
     if (map?.[String(value)]) return map[String(value)];
   }
-  if (cellTranslations[column]?.[String(value)]) return column === "status" ? <StatusBadge value={String(value)} /> : cellTranslations[column][String(value)];
+  if (cellTranslations[column]?.[String(value)]) return column === "status" || column === "display_status" ? <StatusBadge value={String(value)} /> : cellTranslations[column][String(value)];
   return String(value ?? "-");
 }
 
@@ -384,7 +401,32 @@ async function appendFormValue(formData: FormData, key: string, value: unknown) 
     formData.append(key, await normalizeProofPhoto(value));
     return;
   }
+  if (key === "payment_methods" || key === "method" || key === "payment_method") return;
   formData.append(key, value as string | Blob);
+}
+
+async function appendFinanceFormData(formData: FormData, form: AnyRow, expectedTotal?: number) {
+  for (const [key, value] of Object.entries(form)) {
+    await appendFormValue(formData, key, value);
+  }
+  const total = expectedTotal ?? Number(form.amount ?? 0);
+  appendPaymentMethodsToFormData(formData, form.payment_methods ?? defaultPaymentMethods(String(total || "")), total > 0 ? total : undefined);
+}
+
+function paymentLinesForRow(row: AnyRow) {
+  const lines = parsePaymentMethods(row.payment_methods);
+  if (lines.length > 0) return lines;
+  const amount = row.amount_paid ?? row.amount ?? 0;
+  const method = row.method ?? row.payment_method ?? "cash";
+  return [{ method: String(method), amount: String(amount) }];
+}
+
+function sumPaidByMethod(payments: AnyRow[], methodCode: string) {
+  return payments
+    .filter((payment) => payment.status === "paid")
+    .reduce((sum, payment) => {
+      return sum + paymentLinesForRow(payment).filter((line) => line.method === methodCode).reduce((inner, line) => inner + Number(line.amount || 0), 0);
+    }, 0);
 }
 
 function nextDateForWeekday(weekday: string) {
@@ -494,6 +536,11 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
       amount: Number(payment.amount ?? 0),
       balance_due: Number(payment.balance_due ?? 0),
       method: payment.method,
+      payment_methods: payment.payment_methods,
+      membership_id: payment.membership_id,
+      membership_plan_name: payment.membership_plan_name,
+      membership_starts_on: payment.membership_starts_on,
+      membership_ends_on: payment.membership_ends_on,
       movement_date: payment.paid_on ?? payment.due_on,
       proof_url: payment.proof_url,
       status: payment.status,
@@ -507,6 +554,7 @@ function buildCashMovements(payments: AnyRow[], expenses: AnyRow[]) {
       member_name: expense.supplier || "-",
       amount: -Number(expense.amount ?? 0),
       method: expense.payment_method,
+      payment_methods: expense.payment_methods,
       movement_date: expense.spent_on,
       proof_url: expense.proof_url,
       status: "paid",
@@ -540,9 +588,13 @@ function whatsappUrl(phone: unknown, message: string) {
   return normalized ? `https://wa.me/${normalized}?text=${encodeURIComponent(message)}` : "";
 }
 
+function membershipEffectiveStatus(membership: AnyRow) {
+  return String(membership.display_status ?? membership.status ?? "");
+}
+
 function memberActiveMembership(member: AnyRow, memberships: AnyRow[]) {
   return memberships
-    .filter((membership) => Number(membership.member_id) === Number(member.id) && membership.status === "active")
+    .filter((membership) => Number(membership.member_id) === Number(member.id) && membershipEffectiveStatus(membership) === "active")
     .sort((a, b) => String(b.ends_on).localeCompare(String(a.ends_on)))[0] ?? null;
 }
 
@@ -582,12 +634,17 @@ export function GymPage() {
   const [equipmentForm, setEquipmentForm] = useState<AnyRow>(emptyEquipment);
   const [productForm, setProductForm] = useState<AnyRow>(emptyProduct);
   const [productSaleForm, setProductSaleForm] = useState<AnyRow>(emptyProductSale);
-  const [saleForm, setSaleForm] = useState<AnyRow>({ member_id: "", plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", status: "paid", due_on: "", proof_photo: null, notes: "" });
-  const [incomeForm, setIncomeForm] = useState<AnyRow>({ category: "Venta externa", concept: "", payer_name: "", branch_id: "", amount: "", paid_on: new Date().toISOString().slice(0, 10), due_on: "", method: "cash", status: "paid", proof_photo: null, notes: "" });
+  const [saleForm, setSaleForm] = useState<AnyRow>({ member_id: "", plan_id: "", starts_on: new Date().toISOString().slice(0, 10), discount: "0", method: "cash", payment_methods: defaultPaymentMethods(), status: "paid", due_on: "", proof_photo: null, notes: "" });
+  const [incomeForm, setIncomeForm] = useState<AnyRow>({ category: "Venta externa", concept: "", payer_name: "", branch_id: "", amount: "", paid_on: new Date().toISOString().slice(0, 10), due_on: "", method: "cash", payment_methods: defaultPaymentMethods(), status: "paid", proof_photo: null, notes: "" });
+  const [membershipEditModalOpen, setMembershipEditModalOpen] = useState(false);
+  const [membershipEditForm, setMembershipEditForm] = useState<AnyRow>(emptyMembershipEdit);
+  const [editingMembershipId, setEditingMembershipId] = useState<number | null>(null);
+  const [membershipViewOpen, setMembershipViewOpen] = useState(false);
+  const [membershipViewData, setMembershipViewData] = useState<AnyRow | null>(null);
   const [stockPurchaseForm, setStockPurchaseForm] = useState<AnyRow>(emptyStockPurchase);
   const [collectPaymentForm, setCollectPaymentForm] = useState<AnyRow>(emptyCollectPayment);
   const [selectedReceivable, setSelectedReceivable] = useState<AnyRow | null>(null);
-  const [expenseForm, setExpenseForm] = useState<AnyRow>({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", proof_photo: null });
+  const [expenseForm, setExpenseForm] = useState<AnyRow>({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", payment_methods: defaultPaymentMethods(), proof_photo: null });
   const [classForm, setClassForm] = useState<AnyRow>(emptyClassForm);
   const [classModalOpen, setClassModalOpen] = useState(false);
   const [memberStatusFilter, setMemberStatusFilter] = useState<string>("");
@@ -892,6 +949,73 @@ export function GymPage() {
     });
   }
 
+  function openEditMembership(membership: AnyRow) {
+    setEditingMembershipId(Number(membership.id));
+    setMembershipEditForm({
+      plan_id: String(membership.plan_id ?? ""),
+      starts_on: String(membership.starts_on ?? "").slice(0, 10),
+      ends_on: String(membership.ends_on ?? "").slice(0, 10),
+      discount: String(membership.discount ?? "0"),
+      notes: membership.notes ?? "",
+    });
+    setMembershipEditModalOpen(true);
+  }
+
+  async function saveMembershipEdit(event: FormEvent) {
+    event.preventDefault();
+    if (!editingMembershipId) return;
+    await httpClient.put(`/api/gym/memberships/${editingMembershipId}`, membershipEditForm);
+    setMembershipEditModalOpen(false);
+    setEditingMembershipId(null);
+    setMessage("Membresía actualizada correctamente.");
+    await loadAll();
+  }
+
+  async function openMembershipFromCash(movement: AnyRow) {
+    const membershipId = movement.membership_id;
+    if (!membershipId) return;
+    const response = await httpClient.get(`/api/gym/memberships/${membershipId}`);
+    setMembershipViewData(response.data);
+    setMembershipViewOpen(true);
+  }
+
+  function confirmDeleteMembership(membership: AnyRow) {
+    const memberLabel = membership.member_name ?? "el socio";
+    const cancelMembership = async (force = false) => {
+      const response = await httpClient.delete(`/api/gym/memberships/${membership.id}`, { params: force ? { force: true } : {} });
+      setMessage(response.data?.message ?? "Membresía cancelada correctamente.");
+      if (memberMembershipModalOpen && selectedMember && Number(selectedMember.id) === Number(membership.member_id)) {
+        const history = await httpClient.get(`/api/gym/members/${selectedMember.id}/memberships`);
+        setMemberMemberships(history.data);
+      }
+      await loadAll();
+    };
+
+    setConfirm({
+      title: "Cancelar membresía",
+      body: `¿Cancelar la membresía de ${memberLabel}? El pago en caja se conserva; el registro quedará como cancelado.`,
+      onConfirm: async () => {
+        try {
+          await cancelMembership();
+        } catch (error) {
+          const parsed = parseApiError(error);
+          const status = (error as { response?: { status?: number } })?.response?.status;
+          if (status === 422 && parsed.message.includes("forzada")) {
+            setConfirm({
+              title: "Única membresía vigente",
+              body: `${parsed.message} ¿Desea cancelarla de todos modos?`,
+              onConfirm: async () => {
+                await cancelMembership(true);
+              },
+            });
+            return;
+          }
+          throw error;
+        }
+      },
+    });
+  }
+
   function openNewPlan() {
     setEditingPlanId(null);
     setPlanForm(emptyPlan);
@@ -1115,11 +1239,13 @@ export function GymPage() {
   }
 
   function openCollectPayment(payment: AnyRow) {
+    const collectAmount = String(payment.balance_due ?? payment.amount ?? "");
     setSelectedReceivable(payment);
     setCollectPaymentForm({
       ...emptyCollectPayment,
       payment_id: String(payment.payment_id ?? payment.id),
-      amount: String(payment.balance_due ?? payment.amount ?? ""),
+      amount: collectAmount,
+      payment_methods: defaultPaymentMethods(collectAmount),
       paid_on: new Date().toISOString().slice(0, 10),
     });
     setCollectPaymentModalOpen(true);
@@ -1129,10 +1255,13 @@ export function GymPage() {
     event.preventDefault();
     setMessage("");
     const formData = new FormData();
+    const total = Number(collectPaymentForm.amount || 0);
+    normalizePaymentMethodLines(collectPaymentForm.payment_methods ?? defaultPaymentMethods(), total);
     for (const [key, value] of Object.entries(collectPaymentForm)) {
       if (key === "payment_id") continue;
       await appendFormValue(formData, key, value);
     }
+    appendPaymentMethodsToFormData(formData, collectPaymentForm.payment_methods ?? defaultPaymentMethods(), total);
     await httpClient.post(`/api/gym/payments/${collectPaymentForm.payment_id}/collect`, formData);
     setCollectPaymentModalOpen(false);
     setSelectedReceivable(null);
@@ -1150,8 +1279,11 @@ export function GymPage() {
   async function sellMembership(event: FormEvent) {
     event.preventDefault();
     setMessage("");
+    const selectedPlan = plans.find((plan) => String(plan.id) === String(saleForm.plan_id));
+    const saleTotal = Math.max(0, Number(selectedPlan?.price ?? 0) - Number(saleForm.discount ?? 0));
     const formData = new FormData();
-    for (const [key, value] of Object.entries(saleForm)) await appendFormValue(formData, key, value);
+    normalizePaymentMethodLines(saleForm.payment_methods ?? defaultPaymentMethods(), saleTotal);
+    await appendFinanceFormData(formData, saleForm, saleTotal);
     await httpClient.post("/api/gym/memberships", formData);
     setSaleModalOpen(false);
     if (memberMembershipModalOpen && selectedMember) {
@@ -1172,9 +1304,10 @@ export function GymPage() {
   async function saveExpense(event: FormEvent) {
     event.preventDefault();
     const formData = new FormData();
-    for (const [key, value] of Object.entries(expenseForm)) await appendFormValue(formData, key, value);
+    normalizePaymentMethodLines(expenseForm.payment_methods ?? defaultPaymentMethods(), Number(expenseForm.amount || 0));
+    await appendFinanceFormData(formData, expenseForm, Number(expenseForm.amount || 0));
     await httpClient.post("/api/gym/expenses", formData);
-    setExpenseForm({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", proof_photo: null });
+    setExpenseForm({ category: "Servicios", description: "", supplier: "", amount: "", spent_on: new Date().toISOString().slice(0, 10), payment_method: "cash", payment_methods: defaultPaymentMethods(), proof_photo: null });
     setExpenseModalOpen(false);
     setMessage("Gasto registrado.");
     await loadAll();
@@ -1183,9 +1316,10 @@ export function GymPage() {
   async function saveExternalIncome(event: FormEvent) {
     event.preventDefault();
     const formData = new FormData();
-    for (const [key, value] of Object.entries(incomeForm)) await appendFormValue(formData, key, value);
+    normalizePaymentMethodLines(incomeForm.payment_methods ?? defaultPaymentMethods(), Number(incomeForm.amount || 0));
+    await appendFinanceFormData(formData, incomeForm, Number(incomeForm.amount || 0));
     await httpClient.post("/api/gym/payments", formData);
-    setIncomeForm({ category: "Venta externa", concept: "", payer_name: "", branch_id: defaultBranchId(user, branches), amount: "", paid_on: new Date().toISOString().slice(0, 10), due_on: "", method: "cash", status: "paid", proof_photo: null, notes: "" });
+    setIncomeForm({ category: "Venta externa", concept: "", payer_name: "", branch_id: defaultBranchId(user, branches), amount: "", paid_on: new Date().toISOString().slice(0, 10), due_on: "", method: "cash", payment_methods: defaultPaymentMethods(), status: "paid", proof_photo: null, notes: "" });
     setIncomeModalOpen(false);
     setMessage("Ingreso externo registrado.");
     await loadAll();
@@ -1440,12 +1574,12 @@ export function GymPage() {
             </div>
           </Module> : null}
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
-          {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "branch_name", "starts_on", "ends_on", "price", "discount", "status"]} /></Module> : null}
+          {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "branch_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => <ActionButtons onEdit={() => openEditMembership(row)} onDelete={() => confirmDeleteMembership(row)} />} /></Module> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} /></Module> : null}
           {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} /> : null}
           {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); setProductSaleForm({ ...emptyProductSale, sale_date: new Date().toISOString().slice(0, 10) }); setProductSaleModalOpen(true); }} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos." onNew={openNewEquipment} newLabel="Nuevo equipo"><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} action={(row) => <ActionButtons onEdit={() => openEditEquipment(row)} onDelete={() => confirmDeleteEquipment(row)} />} /></Module> : null}
-          {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} branches={branches} branchFilter={financeBranchFilter} onBranchFilterChange={setFinanceBranchFilter} onNewIncome={() => { setIncomeForm((current) => ({ ...current, branch_id: defaultBranchId(user, branches) })); setIncomeModalOpen(true); }} onNewExpense={() => setExpenseModalOpen(true)} onCollectPayment={openCollectPayment} /> : null}
+          {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} branches={branches} branchFilter={financeBranchFilter} onBranchFilterChange={setFinanceBranchFilter} onNewIncome={() => { setIncomeForm((current) => ({ ...current, branch_id: defaultBranchId(user, branches), payment_methods: defaultPaymentMethods(String(current.amount || "")) })); setIncomeModalOpen(true); }} onNewExpense={() => setExpenseModalOpen(true)} onCollectPayment={openCollectPayment} onViewMembership={openMembershipFromCash} /> : null}
           {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} /> : null}
         </section>
       </main>
@@ -1453,7 +1587,9 @@ export function GymPage() {
       <BottomNav tab={tab} onSelect={selectTab} tabs={visibleTabs.filter((item) => item.id !== "system")} />
       <PlanModal open={planModalOpen} editing={Boolean(editingPlanId)} form={planForm} onChange={setPlanForm} onClose={() => setPlanModalOpen(false)} onSubmit={savePlan} />
       <SaleModal open={saleModalOpen} form={saleForm} members={members} plans={plans} onChange={setSaleForm} onClose={() => setSaleModalOpen(false)} onSubmit={sellMembership} />
-      <MemberMembershipModal open={memberMembershipModalOpen} member={selectedMember} rows={memberMemberships} saleForm={saleForm} plans={plans} onSaleChange={setSaleForm} onClose={() => setMemberMembershipModalOpen(false)} onSubmit={sellMembership} />
+      <MemberMembershipModal open={memberMembershipModalOpen} member={selectedMember} rows={memberMemberships} saleForm={saleForm} plans={plans} onSaleChange={setSaleForm} onClose={() => setMemberMembershipModalOpen(false)} onSubmit={sellMembership} onDeleteMembership={confirmDeleteMembership} onEditMembership={openEditMembership} />
+      <EditMembershipModal open={membershipEditModalOpen} form={membershipEditForm} plans={plans} onChange={setMembershipEditForm} onClose={() => { setMembershipEditModalOpen(false); setEditingMembershipId(null); }} onSubmit={saveMembershipEdit} />
+      <MembershipDetailModal open={membershipViewOpen} membership={membershipViewData} onClose={() => { setMembershipViewOpen(false); setMembershipViewData(null); }} />
       <IncomeModal open={incomeModalOpen} form={incomeForm} branches={branches} onChange={setIncomeForm} onClose={() => setIncomeModalOpen(false)} onSubmit={saveExternalIncome} />
       <CollectPaymentModal open={collectPaymentModalOpen} payment={selectedReceivable} form={collectPaymentForm} onChange={setCollectPaymentForm} onClose={() => { setCollectPaymentModalOpen(false); setSelectedReceivable(null); }} onSubmit={saveCollectPayment} />
       <StockPurchaseModal open={stockPurchaseModalOpen} product={selectedProduct} form={stockPurchaseForm} onChange={setStockPurchaseForm} onClose={() => { setStockPurchaseModalOpen(false); setSelectedProduct(null); }} onSubmit={saveStockPurchase} />
@@ -1488,8 +1624,8 @@ function Dashboard({ dashboard, activeMembers, membershipsCount, notifications, 
 }
 
 function PremiumCommandCenter({ members, memberships, payments, attendance, trainingSubscriptions, onOpenCredential }: { members: AnyRow[]; memberships: AnyRow[]; payments: AnyRow[]; attendance: AnyRow[]; trainingSubscriptions: AnyRow[]; onOpenCredential: (member: AnyRow) => void }) {
-  const expiring = memberships.filter((item) => item.status === "active" && (daysUntil(item.ends_on) ?? 999) >= 0 && (daysUntil(item.ends_on) ?? 999) <= 7);
-  const expired = memberships.filter((item) => item.status === "active" && (daysUntil(item.ends_on) ?? 1) < 0);
+  const expiring = memberships.filter((item) => membershipEffectiveStatus(item) === "active" && (daysUntil(item.ends_on) ?? 999) >= 0 && (daysUntil(item.ends_on) ?? 999) <= 7);
+  const expired = memberships.filter((item) => membershipEffectiveStatus(item) === "expired" || ((daysUntil(item.ends_on) ?? 1) < 0 && item.status === "active"));
   const inactiveMembers = members.filter((member) => {
     const last = lastAttendanceForMember(member, attendance);
     const inactivity = last ? Math.abs(daysUntil(last.checked_in_at) ?? 0) : 99;
@@ -1648,14 +1784,14 @@ function ProductsModule({ products, productSales, branches, branchFilter, onBran
   );
 }
 
-function FinanceModule({ movements, payments, expenses, branches, branchFilter, onBranchFilterChange, onNewIncome, onNewExpense, onCollectPayment }: { movements: AnyRow[]; payments: AnyRow[]; expenses: AnyRow[]; branches: AnyRow[]; branchFilter: string; onBranchFilterChange: (value: string) => void; onNewIncome: () => void; onNewExpense: () => void; onCollectPayment: (payment: AnyRow) => void }) {
+function FinanceModule({ movements, payments, expenses, branches, branchFilter, onBranchFilterChange, onNewIncome, onNewExpense, onCollectPayment, onViewMembership }: { movements: AnyRow[]; payments: AnyRow[]; expenses: AnyRow[]; branches: AnyRow[]; branchFilter: string; onBranchFilterChange: (value: string) => void; onNewIncome: () => void; onNewExpense: () => void; onCollectPayment: (payment: AnyRow) => void; onViewMembership: (movement: AnyRow) => void }) {
   const methods = ["cash", "yape", "plin", "transfer", "card"];
   const branchScopedPayments = payments.filter(hasAssignedBranch);
   const branchScopedExpenses = expenses.filter(hasAssignedBranch);
   const confirmedPayments = branchScopedPayments.filter((payment) => payment.status === "paid");
   const incomeByMethod = methods.map((method) => ({
     method,
-    amount: confirmedPayments.filter((payment) => payment.method === method).reduce((sum, payment) => sum + Number(payment.amount_paid ?? payment.amount ?? 0), 0),
+    amount: sumPaidByMethod(confirmedPayments, method),
   }));
   const totalIncome = incomeByMethod.reduce((sum, item) => sum + item.amount, 0);
   const totalExpenses = branchScopedExpenses.reduce((sum, expense) => sum + Number(expense.amount ?? 0), 0);
@@ -1685,7 +1821,7 @@ function FinanceModule({ movements, payments, expenses, branches, branchFilter, 
         {incomeByMethod.map((item) => <MetricCard key={item.method} title={cellTranslations.method[item.method]} value={money(item.amount)} />)}
       </div>
       <DataTable title="Cuentas por cobrar" rows={receivables} columns={["receipt_number", "payer_name", "amount", "amount_paid", "balance_due", "due_on", "status", "branch_name"]} action={(row) => Number(row.balance_due ?? 0) > 0 ? <button type="button" onClick={() => onCollectPayment(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Cobrar</button> : null} />
-      <DataTable title="Movimientos de caja" rows={movements} columns={["movement_type", "concept", "member_name", "amount", "balance_due", "method", "movement_date", "status", "branch_name"]} action={(row) => ["pending", "credit", "partial"].includes(String(row.status)) && Number(row.balance_due ?? 0) > 0 ? <button type="button" onClick={() => onCollectPayment(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Cobrar</button> : null} />
+      <DataTable title="Movimientos de caja" rows={movements} columns={["movement_type", "concept", "member_name", "amount", "balance_due", "method", "movement_date", "status", "branch_name"]} action={(row) => <div className="flex flex-wrap justify-end gap-2">{row.membership_id ? <button type="button" onClick={() => onViewMembership(row)} className="rounded-xl bg-white px-3 py-2 text-xs font-black text-zinc-950 ring-1 ring-zinc-200">Ver membresía</button> : null}{["pending", "credit", "partial"].includes(String(row.status)) && Number(row.balance_due ?? 0) > 0 ? <button type="button" onClick={() => onCollectPayment(row)} className="rounded-xl bg-[#ffcc00] px-3 py-2 text-xs font-black text-zinc-950">Cobrar</button> : null}</div>} />
     </div>
   );
 }
@@ -1808,8 +1944,8 @@ function WeeklySchedule({ classes, weekdays, onEdit }: { classes: AnyRow[]; week
   );
 }
 
-function ActionButtons({ onEdit, onDelete, onDetail, extra }: { onEdit: () => void; onDelete: () => void; onDetail?: () => void; extra?: ReactNode }) {
-  return <div className="flex flex-wrap justify-end gap-2">{extra}{onDetail ? <IconButton title="Ver detalles" onClick={onDetail} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><Eye className="h-4 w-4" /></IconButton> : null}<IconButton title="Editar" onClick={onEdit} className="bg-zinc-950 text-white"><Edit3 className="h-4 w-4" /></IconButton><IconButton title="Eliminar" onClick={onDelete} className="bg-red-50 text-red-700 ring-1 ring-red-100"><Trash2 className="h-4 w-4" /></IconButton></div>;
+function ActionButtons({ onEdit, onDelete, onDetail, extra }: { onEdit?: () => void; onDelete: () => void; onDetail?: () => void; extra?: ReactNode }) {
+  return <div className="flex flex-wrap justify-end gap-2">{extra}{onDetail ? <IconButton title="Ver detalles" onClick={onDetail} className="bg-white text-zinc-950 ring-1 ring-zinc-200"><Eye className="h-4 w-4" /></IconButton> : null}{onEdit ? <IconButton title="Editar" onClick={onEdit} className="bg-zinc-950 text-white"><Edit3 className="h-4 w-4" /></IconButton> : null}<IconButton title="Cancelar" onClick={onDelete} className="bg-red-50 text-red-700 ring-1 ring-red-100"><Trash2 className="h-4 w-4" /></IconButton></div>;
 }
 
 function IconButton({ title, onClick, className, children }: { title: string; onClick: () => void; className: string; children: ReactNode }) {
@@ -1829,12 +1965,12 @@ function DataTable({ title, rows, columns, action }: { title: string; rows: AnyR
       <div className="mb-4 flex items-center justify-between gap-3"><h2 className="min-w-0 truncate text-lg font-black">{title}</h2><span className="shrink-0 rounded-full bg-[#ffcc00] px-3 py-1 text-xs font-black text-zinc-950">{rows.length} registros</span></div>
       <div className="space-y-3 md:hidden">
         {rows.length === 0 ? <p className="rounded-2xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-500">No hay registros para mostrar.</p> : null}
-        {rows.map((row) => <article key={row.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><div className="grid gap-2">{columns.slice(0, 6).map((column) => <div key={column} className="flex items-start justify-between gap-3 border-b border-zinc-200/70 pb-2 last:border-0 last:pb-0"><span className="text-[11px] font-black uppercase tracking-wide text-zinc-500">{labels[column] ?? column}</span><span className="max-w-[55%] text-right text-sm font-semibold text-zinc-900">{formatCell(column, row[column])}</span></div>)}</div>{action ? <div className="mt-4 flex justify-end">{action(row)}</div> : null}</article>)}
+        {rows.map((row) => <article key={row.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><div className="grid gap-2">{columns.slice(0, 6).map((column) => <div key={column} className="flex items-start justify-between gap-3 border-b border-zinc-200/70 pb-2 last:border-0 last:pb-0"><span className="text-[11px] font-black uppercase tracking-wide text-zinc-500">{labels[column] ?? column}</span><span className="max-w-[55%] text-right text-sm font-semibold text-zinc-900">{formatCell(column, row[column], row)}</span></div>)}</div>{action ? <div className="mt-4 flex justify-end">{action(row)}</div> : null}</article>)}
       </div>
       <div className="hidden overflow-x-auto rounded-2xl border border-zinc-100 md:block">
         <table className="w-full min-w-[760px] text-left text-sm">
           <thead><tr className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">{columns.map((column) => <th key={column} className="px-3 py-3">{labels[column] ?? column}</th>)}{action ? <th className="px-3 py-3 text-right">Acciones</th> : null}</tr></thead>
-          <tbody>{rows.map((row) => <tr key={row.id} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/70">{columns.map((column) => <td key={column} className="px-3 py-3">{formatCell(column, row[column])}</td>)}{action ? <td className="px-3 py-3">{action(row)}</td> : null}</tr>)}</tbody>
+          <tbody>{rows.map((row) => <tr key={row.id} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/70">{columns.map((column) => <td key={column} className="px-3 py-3">{formatCell(column, row[column], row)}</td>)}{action ? <td className="px-3 py-3">{action(row)}</td> : null}</tr>)}</tbody>
         </table>
       </div>
     </div>
@@ -1888,14 +2024,14 @@ function PlanModal({ open, editing, form, onChange, onClose, onSubmit }: { open:
 }
 
 function SaleModal({ open, form, members, plans, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; members: AnyRow[]; plans: AnyRow[]; onChange: (form: any) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-  return <Modal open={open} title="Nueva venta" subtitle="Activa una membresía y registra el pago." onClose={onClose}><form onSubmit={onSubmit} className="space-y-3"><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><SearchableSelect required value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members)} emptyOption={{ value: "", label: "Seleccione socio" }} className={fieldClass("w-full")} /></label><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Plan</RequiredLabel><SearchableSelect required value={String(form.plan_id ?? "")} onChange={(value) => onChange({ ...form, plan_id: value })} options={planOptions(plans, money)} emptyOption={{ value: "", label: "Seleccione plan" }} className={fieldClass("w-full")} /></label><div className="grid gap-3 sm:grid-cols-2"><Field label="Fecha de inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required /><Field label="Descuento" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} /></div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<SearchableSelect value={form.status ?? "paid"} onChange={(value) => onChange({ ...form, status: value })} options={paymentStatusOptions} className={fieldClass("w-full")} /></label>{form.status === "credit" ? <Field label="Vence el" type="date" value={form.due_on ?? ""} onChange={(value) => onChange({ ...form, due_on: value })} /> : null}<PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} /><FormActions onClose={onClose} submitLabel="Cobrar y activar" /></form></Modal>;
+  return <Modal open={open} title="Nueva venta" subtitle="Activa una membresía y registra el pago." onClose={onClose}><form onSubmit={onSubmit} className="space-y-3"><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Socio</RequiredLabel><SearchableSelect required value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members)} emptyOption={{ value: "", label: "Seleccione socio" }} className={fieldClass("w-full")} /></label><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Plan</RequiredLabel><SearchableSelect required value={String(form.plan_id ?? "")} onChange={(value) => onChange({ ...form, plan_id: value })} options={planOptions(plans, money)} emptyOption={{ value: "", label: "Seleccione plan" }} className={fieldClass("w-full")} /></label><div className="grid gap-3 sm:grid-cols-2"><Field label="Fecha de inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required /><Field label="Descuento" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} /></div><label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<SearchableSelect value={form.status ?? "paid"} onChange={(value) => onChange({ ...form, status: value })} options={paymentStatusOptions} className={fieldClass("w-full")} /></label>{form.status === "credit" ? <Field label="Vence el" type="date" value={form.due_on ?? ""} onChange={(value) => onChange({ ...form, due_on: value })} /> : null}<PaymentMethodsFields lines={form.payment_methods ?? defaultPaymentMethods()} totalAmount={Math.max(0, Number(plans.find((plan) => String(plan.id) === String(form.plan_id))?.price ?? 0) - Number(form.discount ?? 0))} file={form.proof_photo} onChange={(lines) => onChange({ ...form, payment_methods: lines })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} /><FormActions onClose={onClose} submitLabel="Cobrar y activar" /></form></Modal>;
 }
 
-function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChange, onClose, onSubmit }: { open: boolean; member: AnyRow | null; rows: AnyRow[]; saleForm: AnyRow; plans: AnyRow[]; onSaleChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChange, onClose, onSubmit, onDeleteMembership, onEditMembership }: { open: boolean; member: AnyRow | null; rows: AnyRow[]; saleForm: AnyRow; plans: AnyRow[]; onSaleChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void; onDeleteMembership: (membership: AnyRow) => void; onEditMembership: (membership: AnyRow) => void }) {
   return (
     <Modal open={open} title="Membresías del socio" subtitle={member ? `${member.first_name} ${member.last_name} · DNI ${member.dni ?? member.document_number}` : "Historial y nueva venta"} onClose={onClose}>
       <div className="space-y-5">
-        <DataTable title="Historial de membresías" rows={rows} columns={["plan_name", "starts_on", "ends_on", "price", "discount", "status"]} />
+        <DataTable title="Historial de membresías" rows={rows} columns={["plan_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => row.status !== "cancelled" && row.status !== "replaced" ? <ActionButtons onEdit={() => onEditMembership(row)} onDelete={() => onDeleteMembership(row)} /> : undefined} />
         <form onSubmit={onSubmit} className="rounded-3xl border border-zinc-200 bg-zinc-50 p-4">
           <h3 className="text-lg font-black">Activar nueva membresía</h3>
           <div className="mt-3 grid gap-3">
@@ -1909,7 +2045,7 @@ function MemberMembershipModal({ open, member, rows, saleForm, plans, onSaleChan
             </div>
             <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<SearchableSelect value={saleForm.status ?? "paid"} onChange={(value) => onSaleChange({ ...saleForm, status: value })} options={paymentStatusOptions} className={fieldClass("w-full")} /></label>
             {saleForm.status === "credit" ? <Field label="Vence el" type="date" value={saleForm.due_on ?? ""} onChange={(value) => onSaleChange({ ...saleForm, due_on: value })} /> : null}
-            <PaymentFields method={saleForm.method ?? "cash"} file={saleForm.proof_photo} onMethodChange={(value) => onSaleChange({ ...saleForm, method: value, proof_photo: value === "cash" ? null : saleForm.proof_photo })} onFileChange={(file) => onSaleChange({ ...saleForm, proof_photo: file })} />
+            <PaymentMethodsFields lines={saleForm.payment_methods ?? defaultPaymentMethods()} totalAmount={Math.max(0, Number(plans.find((plan) => String(plan.id) === String(saleForm.plan_id))?.price ?? 0) - Number(saleForm.discount ?? 0))} file={saleForm.proof_photo} onChange={(lines) => onSaleChange({ ...saleForm, payment_methods: lines })} onFileChange={(file) => onSaleChange({ ...saleForm, proof_photo: file })} />
           </div>
           <FormActions onClose={onClose} submitLabel="Activar membresía" />
         </form>
@@ -1936,7 +2072,7 @@ function IncomeModal({ open, form, branches, onChange, onClose, onSubmit }: { op
           Estado
           <SearchableSelect value={form.status ?? "paid"} onChange={(value) => onChange({ ...form, status: value })} options={paymentStatusOptions} className={fieldClass("w-full")} />
         </label>
-        <PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <PaymentMethodsFields lines={form.payment_methods ?? defaultPaymentMethods(String(form.amount || ""))} totalAmount={form.amount} file={form.proof_photo} onChange={(lines) => onChange({ ...form, payment_methods: lines })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
         <FormActions onClose={onClose} submitLabel="Guardar ingreso" />
       </form>
@@ -1958,7 +2094,7 @@ function ExpenseModal({ open, form, onChange, onClose, onSubmit }: { open: boole
           <Field label="Monto" type="number" value={form.amount} onChange={(value) => onChange({ ...form, amount: value })} required />
           <Field label="Fecha" type="date" value={form.spent_on} onChange={(value) => onChange({ ...form, spent_on: value })} required />
         </div>
-        <PaymentFields method={form.payment_method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, payment_method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <PaymentMethodsFields lines={form.payment_methods ?? defaultPaymentMethods(String(form.amount || ""))} totalAmount={form.amount} file={form.proof_photo} onChange={(lines) => onChange({ ...form, payment_methods: lines })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <FormActions onClose={onClose} submitLabel="Guardar gasto" />
       </form>
     </Modal>
@@ -2024,7 +2160,7 @@ function CollectPaymentModal({ open, payment, form, onChange, onClose, onSubmit 
       <form onSubmit={onSubmit} className="grid gap-3">
         <Field label="Monto a cobrar" type="number" value={form.amount} onChange={(value) => onChange({ ...form, amount: value })} required />
         <Field label="Fecha de cobro" type="date" value={form.paid_on} onChange={(value) => onChange({ ...form, paid_on: value })} required />
-        <PaymentFields method={form.method ?? "cash"} file={form.proof_photo} onMethodChange={(value) => onChange({ ...form, method: value, proof_photo: value === "cash" ? null : form.proof_photo })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <PaymentMethodsFields lines={form.payment_methods ?? defaultPaymentMethods(String(form.amount || ""))} totalAmount={form.amount} file={form.proof_photo} onChange={(lines) => onChange({ ...form, payment_methods: lines })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <Field label="Notas" value={form.notes ?? ""} onChange={(value) => onChange({ ...form, notes: value })} />
         <FormActions onClose={onClose} submitLabel="Confirmar cobro" />
       </form>
@@ -2567,6 +2703,46 @@ function RequiredLabel({ children, required = true }: { children: ReactNode; req
   return <span>{children}{required ? <span className="ml-1 text-red-600">*</span> : null}</span>;
 }
 
+function EditMembershipModal({ open, form, plans, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; plans: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return (
+    <Modal open={open} title="Editar membresía" subtitle="Corrige fechas, plan o descuento." onClose={onClose}>
+      <form onSubmit={onSubmit} className="grid gap-3">
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          <RequiredLabel>Plan</RequiredLabel>
+          <SearchableSelect required value={String(form.plan_id ?? "")} onChange={(value) => onChange({ ...form, plan_id: value })} options={planOptions(plans, money)} emptyOption={{ value: "", label: "Seleccione plan" }} className={fieldClass("w-full")} />
+        </label>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required />
+          <Field label="Vence" type="date" value={form.ends_on} onChange={(value) => onChange({ ...form, ends_on: value })} required />
+        </div>
+        <Field label="Descuento" type="number" value={form.discount} onChange={(value) => onChange({ ...form, discount: value })} />
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
+        <FormActions onClose={onClose} submitLabel="Guardar cambios" />
+      </form>
+    </Modal>
+  );
+}
+
+function MembershipDetailModal({ open, membership, onClose }: { open: boolean; membership: AnyRow | null; onClose: () => void }) {
+  if (!membership) return null;
+  return (
+    <Modal open={open} title="Membresía vinculada" subtitle={membership.member_name ? String(membership.member_name) : "Detalle del pago"} onClose={onClose}>
+      <div className="grid gap-3 rounded-2xl bg-zinc-50 p-4 text-sm">
+        <p><span className="font-black text-zinc-500">Socio:</span> {membership.member_name ?? "-"}</p>
+        <p><span className="font-black text-zinc-500">Plan:</span> {membership.plan_name ?? "-"}</p>
+        <p><span className="font-black text-zinc-500">Sede:</span> {membership.branch_name ?? "-"}</p>
+        <p><span className="font-black text-zinc-500">Inicio:</span> {formatDateTime(membership.starts_on)}</p>
+        <p><span className="font-black text-zinc-500">Vence:</span> {formatDateTime(membership.ends_on)}</p>
+        <p><span className="font-black text-zinc-500">Precio:</span> {money(membership.price)}</p>
+        <p><span className="font-black text-zinc-500">Descuento:</span> {money(membership.discount)}</p>
+        <p><span className="font-black text-zinc-500">Estado:</span> {cellTranslations.status[String(membership.display_status ?? membership.status)] ?? membership.status}</p>
+        {membership.notes ? <p><span className="font-black text-zinc-500">Notas:</span> {membership.notes}</p> : null}
+      </div>
+      <div className="mt-4 flex justify-end"><button type="button" onClick={onClose} className="rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-black text-white">Cerrar</button></div>
+    </Modal>
+  );
+}
+
 function PaymentFields({ method, file, existingProofUrl, onMethodChange, onFileChange }: { method: string; file: File | null; existingProofUrl?: string; onMethodChange: (value: string) => void; onFileChange: (file: File | null) => void }) {
   const [previewUrl, setPreviewUrl] = useState("");
 
@@ -2646,3 +2822,4 @@ function ErrorModal({ state, onClose, onGoToLogin }: { state: ErrorState; onClos
 function BottomNav({ tab, tabs, onSelect }: { tab: Tab; tabs: { id: Tab; label: string; icon: any }[]; onSelect: (tab: Tab) => void }) {
   return <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/95 px-2 py-2 shadow-[0_-10px_30px_rgba(0,0,0,0.08)] backdrop-blur-xl lg:hidden"><div className="mx-auto grid max-w-md grid-cols-4 gap-1">{tabs.slice(0, 4).map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => onSelect(item.id)} className={`rounded-2xl px-2 py-2 text-[10px] font-black ${tab === item.id ? "bg-[#ffcc00] text-zinc-950" : "text-zinc-500"}`}><Icon className="mx-auto mb-1 h-5 w-5" />{item.label}</button>; })}</div></nav>;
 }
+

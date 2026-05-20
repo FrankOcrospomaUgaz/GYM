@@ -120,6 +120,169 @@ class GymController extends Controller
         );
     }
 
+    private function refreshExpiredMemberships(?int $tenantId = null, ?int $memberId = null): void
+    {
+        $query = DB::table('gym_memberships')
+            ->where('status', 'active')
+            ->whereDate('ends_on', '<', now()->toDateString());
+
+        if ($tenantId !== null) {
+            $query->where('tenant_id', $tenantId);
+        }
+        if ($memberId !== null) {
+            $query->where('member_id', $memberId);
+        }
+
+        $query->update(['status' => 'expired', 'updated_at' => now()]);
+    }
+
+    private function membershipDisplayStatus(object $membership): string
+    {
+        $status = (string) $membership->status;
+        if ($status !== 'active') {
+            return $status;
+        }
+
+        $today = now()->toDateString();
+        if ((string) $membership->ends_on < $today) {
+            return 'expired';
+        }
+        if ((string) $membership->starts_on > $today) {
+            return 'pending';
+        }
+
+        return 'active';
+    }
+
+    private function enrichMembershipRow(object $membership): object
+    {
+        $membership->display_status = $this->membershipDisplayStatus($membership);
+
+        return $membership;
+    }
+
+    private function replaceConflictingMemberships(int $memberId, string $startsOn, string $endsOn, ?int $exceptMembershipId = null): void
+    {
+        $query = DB::table('gym_memberships')
+            ->where('member_id', $memberId)
+            ->whereIn('status', ['active', 'expired'])
+            ->where('starts_on', '<=', $endsOn)
+            ->where('ends_on', '>=', $startsOn);
+
+        if ($exceptMembershipId !== null) {
+            $query->where('id', '<>', $exceptMembershipId);
+        }
+
+        $query->update(['status' => 'replaced', 'updated_at' => now()]);
+    }
+
+    private function assertMembershipSaleIsValid(Request $request, array $data, object $plan, Carbon $starts): void
+    {
+        $discount = (float) ($data['discount'] ?? 0);
+        abort_unless($discount <= (float) $plan->price, 422, 'El descuento no puede ser mayor al precio del plan.');
+
+        $paymentStatus = (string) $data['status'];
+        if ($paymentStatus === 'credit') {
+            abort_unless(filled($data['due_on'] ?? null), 422, 'Indique la fecha de vencimiento para ventas a crédito.');
+            abort_unless(Carbon::parse($data['due_on'])->greaterThanOrEqualTo($starts), 422, 'La fecha de vencimiento del crédito no puede ser anterior al inicio.');
+        }
+
+        if ($paymentStatus === 'paid' && $this->paymentMethodsRequireProof($this->parsePaymentMethodsInput($request))) {
+            abort_unless($request->hasFile('proof_photo'), 422, 'Adjunte el comprobante de pago para medios distintos a efectivo.');
+        }
+    }
+
+    private function parsePaymentMethodsInput(Request $request, ?float $expectedTotal = null, string $legacyMethodField = 'method'): array
+    {
+        $raw = $request->input('payment_methods');
+        if (is_string($raw)) {
+            $decoded = json_decode($raw, true);
+            $raw = is_array($decoded) ? $decoded : null;
+        }
+
+        if (! is_array($raw) || $raw === []) {
+            $legacyMethod = $request->input($legacyMethodField);
+            if (! $legacyMethod) {
+                return [];
+            }
+
+            $amount = $expectedTotal ?? (float) $request->input('amount', 0);
+
+            return [['method' => (string) $legacyMethod, 'amount' => round($amount, 2)]];
+        }
+
+        $methods = [];
+        foreach ($raw as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $method = (string) ($row['method'] ?? '');
+            abort_unless(in_array($method, ['cash', 'card', 'transfer', 'yape', 'plin'], true), 422, 'Medio de pago inválido.');
+            $amount = round((float) ($row['amount'] ?? 0), 2);
+            abort_unless($amount > 0, 422, 'Cada medio de pago debe tener un monto mayor a cero.');
+            $methods[] = ['method' => $method, 'amount' => $amount];
+        }
+
+        abort_unless($methods !== [], 422, 'Indique al menos un medio de pago.');
+
+        if ($expectedTotal !== null) {
+            $sum = round(array_sum(array_column($methods, 'amount')), 2);
+            abort_unless($sum === round($expectedTotal, 2), 422, 'La suma de medios debe coincidir con el monto total.');
+        }
+
+        return $methods;
+    }
+
+    private function primaryPaymentMethodFromSplits(array $methods): string
+    {
+        return count($methods) > 1 ? 'mixed' : ($methods[0]['method'] ?? 'cash');
+    }
+
+    private function paymentMethodsRequireProof(array $methods): bool
+    {
+        foreach ($methods as $row) {
+            if (($row['method'] ?? '') !== 'cash' && (float) ($row['amount'] ?? 0) > 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function encodePaymentMethodsColumn(array $methods): ?string
+    {
+        return json_encode($methods, JSON_UNESCAPED_UNICODE);
+    }
+
+    private function decodePaymentMethodsColumn(mixed $raw): array
+    {
+        if (is_array($raw)) {
+            return $raw;
+        }
+        if (! is_string($raw) || $raw === '') {
+            return [];
+        }
+        $decoded = json_decode($raw, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function applyPaymentMethodsToPaymentRow(array &$row, array $methods): void
+    {
+        $row['method'] = $this->primaryPaymentMethodFromSplits($methods);
+        if ($this->tableHasColumn('gym_payments', 'payment_methods')) {
+            $row['payment_methods'] = $this->encodePaymentMethodsColumn($methods);
+        }
+    }
+
+    private function applyPaymentMethodsToExpenseRow(array &$row, array $methods): void
+    {
+        $row['payment_method'] = $this->primaryPaymentMethodFromSplits($methods);
+        if ($this->tableHasColumn('gym_expenses', 'payment_methods')) {
+            $row['payment_methods'] = $this->encodePaymentMethodsColumn($methods);
+        }
+    }
+
     private function tableHasColumn(string $table, string $column): bool
     {
         return Schema::hasTable($table) && Schema::hasColumn($table, $column);
@@ -594,7 +757,8 @@ class GymController extends Controller
             'plan_id' => ['required', 'exists:gym_plans,id'],
             'starts_on' => ['required', 'date'],
             'discount' => ['nullable', 'numeric', 'min:0'],
-            'method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+            'method' => ['nullable', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin', 'mixed'])],
+            'payment_methods' => ['nullable'],
             'status' => ['required', Rule::in(['paid', 'pending', 'credit', 'courtesy'])],
             'due_on' => ['nullable', 'date'],
             'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
@@ -606,25 +770,34 @@ class GymController extends Controller
         $this->assertMemberAccessible($request, (int) $data['member_id']);
         $plan = DB::table('gym_plans')->where('id', $data['plan_id'])->where('tenant_id', $tenantId)->first();
         abort_unless($plan !== null, 422, 'El plan no pertenece al cliente activo.');
+        abort_unless((bool) ($plan->is_active ?? true), 422, 'El plan no está activo para ventas.');
+        $member = DB::table('gym_members')->where('id', $data['member_id'])->first();
+        abort_unless($member !== null && (string) $member->status !== 'inactive', 422, 'El socio está inactivo o no existe.');
         $starts = Carbon::parse($data['starts_on']);
+        $endsOn = $starts->copy()->addDays((int) $plan->duration_days)->toDateString();
+        $data['notes'] = filled($data['notes'] ?? null) ? trim((string) $data['notes']) : null;
+        $this->assertMembershipSaleIsValid($request, $data, $plan, $starts);
         $discount = (float) ($data['discount'] ?? 0);
         $amount = max(0, (float) $plan->price - $discount);
 
         $paymentStatus = (string) $data['status'];
-        $proofPath = $paymentStatus === 'paid' && $data['method'] !== 'cash' && $request->hasFile('proof_photo')
+        $paymentMethods = $this->parsePaymentMethodsInput($request, $amount);
+        $proofPath = $paymentStatus === 'paid' && $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
             ? $request->file('proof_photo')?->store('payment-proofs', 'public')
             : null;
         $branchId = $this->branchIdForWrite($request, $this->memberBranchId((int) $data['member_id']));
         $amountPaid = in_array($paymentStatus, ['paid', 'courtesy'], true) ? $amount : 0;
 
-        return DB::transaction(function () use ($request, $data, $plan, $tenantId, $starts, $discount, $amount, $proofPath, $paymentStatus, $branchId, $amountPaid): JsonResponse {
-            DB::table('gym_memberships')->where('member_id', $data['member_id'])->where('status', 'active')->update(['status' => 'replaced', 'updated_at' => now()]);
+        $this->refreshExpiredMemberships($tenantId, (int) $data['member_id']);
+
+        return DB::transaction(function () use ($request, $data, $plan, $tenantId, $starts, $endsOn, $discount, $amount, $proofPath, $paymentStatus, $branchId, $amountPaid, $paymentMethods): JsonResponse {
+            $this->replaceConflictingMemberships((int) $data['member_id'], $starts->toDateString(), $endsOn);
             $membershipId = DB::table('gym_memberships')->insertGetId([
                 'tenant_id' => $tenantId,
                 'member_id' => $data['member_id'],
                 'plan_id' => $data['plan_id'],
                 'starts_on' => $starts->toDateString(),
-                'ends_on' => $starts->copy()->addDays((int) $plan->duration_days)->toDateString(),
+                'ends_on' => $endsOn,
                 'price' => $plan->price,
                 'discount' => $discount,
                 'status' => 'active',
@@ -633,7 +806,7 @@ class GymController extends Controller
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
-            $paymentId = DB::table('gym_payments')->insertGetId([
+            $paymentRow = [
                 'tenant_id' => $tenantId,
                 'branch_id' => $branchId,
                 'member_id' => $data['member_id'],
@@ -641,7 +814,6 @@ class GymController extends Controller
                 'receipt_number' => $this->nextPaymentReceiptNumber(),
                 'amount' => $amount,
                 'amount_paid' => $amountPaid,
-                'method' => $data['method'],
                 'proof_path' => $proofPath,
                 'status' => $paymentStatus,
                 'paid_on' => $starts->toDateString(),
@@ -650,7 +822,9 @@ class GymController extends Controller
                 'registered_by' => $request->user()?->id,
                 'created_at' => now(),
                 'updated_at' => now(),
-            ]);
+            ];
+            $this->applyPaymentMethodsToPaymentRow($paymentRow, $paymentMethods);
+            $paymentId = DB::table('gym_payments')->insertGetId($paymentRow);
 
             return response()->json(['membership_id' => $membershipId, 'payment_id' => $paymentId], 201);
         });
@@ -658,6 +832,9 @@ class GymController extends Controller
 
     public function memberships(Request $request): JsonResponse
     {
+        $tenantId = $this->defaultTenantId($request);
+        $this->refreshExpiredMemberships($tenantId);
+
         $query = $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
             ->join('gym_members', 'gym_members.id', '=', 'gym_memberships.member_id')
             ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
@@ -673,11 +850,150 @@ class GymController extends Controller
 
         $this->scopeBranches($query, $request, 'gym_memberships', 'gym_members.branch_id');
 
-        return response()->json($query->limit(100)->get());
+        if ($request->filled('status')) {
+            $query->where('gym_memberships.status', (string) $request->query('status'));
+        } else {
+            $query->whereNotIn('gym_memberships.status', ['replaced', 'cancelled']);
+        }
+
+        return response()->json($query->limit(150)->get()->map(fn ($row) => $this->enrichMembershipRow($row)));
+    }
+
+    public function destroyMembership(Request $request, int $membership): JsonResponse
+    {
+        $row = $this->scopeTenant(DB::table('gym_memberships')->where('id', $membership), $request, 'gym_memberships')->first();
+        abort_unless($row !== null, 404, 'Membresía no encontrada.');
+
+        $this->assertMemberAccessible($request, (int) $row->member_id);
+        $this->refreshExpiredMemberships((int) $row->tenant_id, (int) $row->member_id);
+
+        $activeCount = DB::table('gym_memberships')
+            ->where('member_id', $row->member_id)
+            ->where('id', '<>', $membership)
+            ->where('status', 'active')
+            ->whereDate('ends_on', '>=', now()->toDateString())
+            ->count();
+
+        if (in_array($row->status, ['active'], true) && $activeCount === 0 && (string) $row->ends_on >= now()->toDateString()) {
+            abort_unless(
+                $request->boolean('force'),
+                422,
+                'Es la única membresía vigente del socio. Confirme la cancelación forzada si aún desea anularla.'
+            );
+        }
+
+        $noteSuffix = ' · Cancelada el '.now()->format('d/m/Y H:i');
+        DB::table('gym_memberships')->where('id', $membership)->update([
+            'status' => 'cancelled',
+            'notes' => trim(($row->notes ?? '').$noteSuffix),
+            'updated_at' => now(),
+        ]);
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Membresía cancelada correctamente.',
+        ]);
+    }
+
+    public function showMembership(Request $request, int $membership): JsonResponse
+    {
+        $row = $this->scopeTenant(DB::table('gym_memberships')->where('id', $membership), $request, 'gym_memberships')
+            ->join('gym_members', 'gym_members.id', '=', 'gym_memberships.member_id')
+            ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
+            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_members.branch_id')
+            ->select(
+                'gym_memberships.*',
+                DB::raw("CONCAT(gym_members.first_name, ' ', gym_members.last_name) as member_name"),
+                'gym_plans.name as plan_name',
+                'gym_plans.duration_days',
+                'gym_branches.name as branch_name'
+            )
+            ->first();
+
+        abort_unless($row !== null, 404, 'Membresía no encontrada.');
+        $this->assertMemberAccessible($request, (int) $row->member_id);
+
+        return response()->json($this->enrichMembershipRow($row));
+    }
+
+    public function updateMembership(Request $request, int $membership): JsonResponse
+    {
+        $data = $request->validate([
+            'plan_id' => ['sometimes', 'exists:gym_plans,id'],
+            'starts_on' => ['sometimes', 'date'],
+            'ends_on' => ['sometimes', 'date'],
+            'discount' => ['nullable', 'numeric', 'min:0'],
+            'notes' => ['nullable', 'string'],
+            'status' => ['sometimes', Rule::in(['active', 'expired', 'cancelled'])],
+        ]);
+
+        $row = $this->scopeTenant(DB::table('gym_memberships')->where('id', $membership), $request, 'gym_memberships')->first();
+        abort_unless($row !== null, 404, 'Membresía no encontrada.');
+        abort_unless(! in_array($row->status, ['replaced', 'cancelled'], true), 422, 'No se puede editar una membresía cancelada o reemplazada.');
+
+        $this->assertMemberAccessible($request, (int) $row->member_id);
+        $tenantId = (int) $row->tenant_id;
+
+        $planId = (int) ($data['plan_id'] ?? $row->plan_id);
+        $plan = DB::table('gym_plans')->where('id', $planId)->where('tenant_id', $tenantId)->first();
+        abort_unless($plan !== null, 422, 'El plan no pertenece al cliente activo.');
+
+        $startsOn = isset($data['starts_on']) ? Carbon::parse($data['starts_on'])->toDateString() : (string) $row->starts_on;
+        $endsOn = isset($data['ends_on'])
+            ? Carbon::parse($data['ends_on'])->toDateString()
+            : (isset($data['starts_on']) || isset($data['plan_id'])
+                ? Carbon::parse($startsOn)->addDays((int) $plan->duration_days)->toDateString()
+                : (string) $row->ends_on);
+
+        abort_unless($endsOn >= $startsOn, 422, 'La fecha de fin no puede ser anterior al inicio.');
+
+        $discount = array_key_exists('discount', $data) ? (float) $data['discount'] : (float) $row->discount;
+        abort_unless($discount <= (float) $plan->price, 422, 'El descuento no puede ser mayor al precio del plan.');
+
+        $this->refreshExpiredMemberships($tenantId, (int) $row->member_id);
+        $this->replaceConflictingMemberships((int) $row->member_id, $startsOn, $endsOn, $membership);
+
+        $update = [
+            'plan_id' => $planId,
+            'starts_on' => $startsOn,
+            'ends_on' => $endsOn,
+            'price' => $plan->price,
+            'discount' => $discount,
+            'updated_at' => now(),
+        ];
+
+        if (array_key_exists('notes', $data)) {
+            $update['notes'] = filled($data['notes'] ?? null) ? trim((string) $data['notes']) : null;
+        }
+        if (isset($data['status'])) {
+            $update['status'] = (string) $data['status'];
+        } elseif ((string) $row->status === 'active' && $endsOn < now()->toDateString()) {
+            $update['status'] = 'expired';
+        }
+
+        DB::table('gym_memberships')->where('id', $membership)->update($update);
+
+        $payment = DB::table('gym_payments')->where('membership_id', $membership)->orderByDesc('id')->first();
+        if ($payment !== null) {
+            $amount = max(0, (float) $plan->price - $discount);
+            DB::table('gym_payments')->where('id', $payment->id)->update([
+                'amount' => $amount,
+                'updated_at' => now(),
+            ]);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Membresía actualizada correctamente.',
+        ]);
     }
 
     public function memberMemberships(Request $request, int $member): JsonResponse
     {
+        $this->assertMemberAccessible($request, $member);
+        $tenantId = $this->defaultTenantId($request);
+        $this->refreshExpiredMemberships($tenantId, $member);
+
         $query = $this->scopeTenant(DB::table('gym_memberships'), $request, 'gym_memberships')
             ->join('gym_members', 'gym_members.id', '=', 'gym_memberships.member_id')
             ->join('gym_plans', 'gym_plans.id', '=', 'gym_memberships.plan_id')
@@ -687,7 +1003,7 @@ class GymController extends Controller
 
         $this->scopeBranches($query, $request, 'gym_memberships', 'gym_members.branch_id');
 
-        return response()->json($query->get());
+        return response()->json($query->get()->map(fn ($row) => $this->enrichMembershipRow($row)));
     }
 
     public function payments(Request $request): JsonResponse
@@ -702,31 +1018,32 @@ class GymController extends Controller
                 'amount' => ['required', 'numeric', 'min:0'],
                 'paid_on' => ['required', 'date'],
                 'due_on' => ['nullable', 'date'],
-                'method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+                'method' => ['nullable', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin', 'mixed'])],
+                'payment_methods' => ['nullable'],
                 'status' => ['required', Rule::in(['paid', 'pending', 'credit', 'courtesy', 'annulled'])],
                 'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
                 'notes' => ['nullable', 'string'],
             ]);
 
             $paymentStatus = (string) $data['status'];
-            $proofPath = $paymentStatus === 'paid' && $data['method'] !== 'cash' && $request->hasFile('proof_photo')
+            $amount = (float) $data['amount'];
+            $paymentMethods = $this->parsePaymentMethodsInput($request, $amount);
+            $proofPath = $paymentStatus === 'paid' && $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
                 ? $request->file('proof_photo')?->store('payment-proofs', 'public')
                 : null;
 
             $tenantId = $this->defaultTenantId($request);
             $memberBranchId = $data['member_id'] ? $this->memberBranchId((int) $data['member_id']) : null;
             $branchId = $this->branchIdForWrite($request, $data['branch_id'] ?? $memberBranchId);
-            $amount = (float) $data['amount'];
             $amountPaid = in_array($paymentStatus, ['paid', 'courtesy'], true) ? $amount : 0;
 
-            DB::table('gym_payments')->insert([
+            $paymentRow = [
                 'tenant_id' => $tenantId,
                 'branch_id' => $branchId,
                 'member_id' => $data['member_id'] ?? null,
                 'receipt_number' => $this->nextPaymentReceiptNumber(),
                 'amount' => $amount,
                 'amount_paid' => $amountPaid,
-                'method' => $data['method'],
                 'status' => $paymentStatus,
                 'paid_on' => Carbon::parse($data['paid_on'])->toDateString(),
                 'due_on' => in_array($paymentStatus, ['credit', 'pending'], true) ? ($data['due_on'] ?? Carbon::parse($data['paid_on'])->addDays(7)->toDateString()) : null,
@@ -736,12 +1053,19 @@ class GymController extends Controller
                 'registered_by' => $request->user()?->id,
                 'created_at' => now(),
                 'updated_at' => now(),
-            ]);
+            ];
+            $this->applyPaymentMethodsToPaymentRow($paymentRow, $paymentMethods);
+            DB::table('gym_payments')->insert($paymentRow);
         }
 
         $query = $this->scopeTenant(DB::table('gym_payments'), $request, 'gym_payments')
             ->leftJoin('gym_members', 'gym_members.id', '=', 'gym_payments.member_id')
             ->orderByDesc('gym_payments.id');
+
+        if ($this->tableHasColumn('gym_payments', 'membership_id')) {
+            $query->leftJoin('gym_memberships', 'gym_memberships.id', '=', 'gym_payments.membership_id')
+                ->leftJoin('gym_plans as membership_plan', 'membership_plan.id', '=', 'gym_memberships.plan_id');
+        }
 
         if ($this->tableHasColumn('gym_payments', 'branch_id')) {
             $query->leftJoin('gym_branches', 'gym_branches.id', '=', 'gym_payments.branch_id');
@@ -761,6 +1085,11 @@ class GymController extends Controller
         if ($this->tableHasColumn('gym_payments', 'branch_id')) {
             $select[] = 'gym_branches.name as branch_name';
         }
+        if ($this->tableHasColumn('gym_payments', 'membership_id')) {
+            $select[] = 'gym_memberships.starts_on as membership_starts_on';
+            $select[] = 'gym_memberships.ends_on as membership_ends_on';
+            $select[] = 'membership_plan.name as membership_plan_name';
+        }
         $query->select($select);
 
         if ($request->boolean('receivable_only')) {
@@ -776,7 +1105,8 @@ class GymController extends Controller
     {
         $data = $request->validate([
             'amount' => ['required', 'numeric', 'min:0.01'],
-            'method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+            'method' => ['nullable', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin', 'mixed'])],
+            'payment_methods' => ['nullable'],
             'paid_on' => ['required', 'date'],
             'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
             'notes' => ['nullable', 'string', 'max:500'],
@@ -790,26 +1120,28 @@ class GymController extends Controller
         abort_unless($balanceDue > 0, 422, 'Este pago ya fue saldado.');
         abort_unless((float) $data['amount'] <= $balanceDue, 422, 'El monto a cobrar supera el saldo pendiente.');
 
-        $proofPath = $data['method'] !== 'cash' && $request->hasFile('proof_photo')
+        $collectionAmount = round((float) $data['amount'], 2);
+        $paymentMethods = $this->parsePaymentMethodsInput($request, $collectionAmount);
+        $proofPath = $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
             ? $request->file('proof_photo')?->store('payment-proofs', 'public')
             : null;
 
-        $collectionAmount = round((float) $data['amount'], 2);
         $newAmountPaid = round((float) ($paymentRow->amount_paid ?? 0) + $collectionAmount, 2);
         $newStatus = $newAmountPaid >= (float) $paymentRow->amount ? 'paid' : 'partial';
 
-        return DB::transaction(function () use ($request, $payment, $paymentRow, $data, $proofPath, $collectionAmount, $newAmountPaid, $newStatus): JsonResponse {
-            DB::table('gym_payments')->where('id', $payment)->update([
+        return DB::transaction(function () use ($request, $payment, $paymentRow, $data, $proofPath, $collectionAmount, $newAmountPaid, $newStatus, $paymentMethods): JsonResponse {
+            $parentUpdate = [
                 'amount_paid' => $newAmountPaid,
                 'status' => $newStatus,
-                'method' => $data['method'],
                 'proof_path' => $proofPath ?? $paymentRow->proof_path,
                 'paid_on' => Carbon::parse($data['paid_on'])->toDateString(),
                 'notes' => trim(($paymentRow->notes ?? '').' · Cobro: S/ '.number_format($collectionAmount, 2).($data['notes'] ? ' · '.$data['notes'] : '')),
                 'updated_at' => now(),
-            ]);
+            ];
+            $this->applyPaymentMethodsToPaymentRow($parentUpdate, $paymentMethods);
+            DB::table('gym_payments')->where('id', $payment)->update($parentUpdate);
 
-            $collectionId = DB::table('gym_payments')->insertGetId([
+            $collectionRow = [
                 'tenant_id' => $paymentRow->tenant_id,
                 'branch_id' => $paymentRow->branch_id,
                 'member_id' => $paymentRow->member_id,
@@ -817,7 +1149,6 @@ class GymController extends Controller
                 'receipt_number' => $this->nextPaymentReceiptNumber(),
                 'amount' => $collectionAmount,
                 'amount_paid' => $collectionAmount,
-                'method' => $data['method'],
                 'proof_path' => $proofPath,
                 'status' => 'paid',
                 'paid_on' => Carbon::parse($data['paid_on'])->toDateString(),
@@ -826,7 +1157,9 @@ class GymController extends Controller
                 'registered_by' => $request->user()?->id,
                 'created_at' => now(),
                 'updated_at' => now(),
-            ]);
+            ];
+            $this->applyPaymentMethodsToPaymentRow($collectionRow, $paymentMethods);
+            $collectionId = DB::table('gym_payments')->insertGetId($collectionRow);
 
             return response()->json([
                 'payment_id' => $payment,
@@ -1201,11 +1534,16 @@ class GymController extends Controller
             'branch_id' => ['nullable', 'exists:gym_branches,id'],
         ]);
 
+        $this->assertMemberAccessible($request, (int) $data['member_id']);
+        $tenantId = $this->defaultTenantId($request);
+        $this->refreshExpiredMemberships($tenantId, (int) $data['member_id']);
+
         $membership = DB::table('gym_memberships')
             ->where('member_id', $data['member_id'])
             ->where('status', 'active')
             ->whereDate('starts_on', '<=', now()->toDateString())
             ->whereDate('ends_on', '>=', now()->toDateString())
+            ->orderByDesc('ends_on')
             ->first();
 
         $id = DB::table('gym_attendances')->insertGetId([
@@ -1702,7 +2040,8 @@ class GymController extends Controller
                 'supplier' => ['nullable', 'string', 'max:120'],
                 'amount' => ['required', 'numeric', 'min:0.01'],
                 'spent_on' => ['required', 'date'],
-                'payment_method' => ['required', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin'])],
+                'payment_method' => ['nullable', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin', 'mixed'])],
+                'payment_methods' => ['nullable'],
                 'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
                 'description' => ['required', 'string', 'max:255'],
             ]);
@@ -1710,12 +2049,16 @@ class GymController extends Controller
             if ($this->tableHasColumn('gym_expenses', 'branch_id')) {
                 $data['branch_id'] = $this->branchIdForWrite($request, null);
             }
-            $data['proof_path'] = $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
+            $amount = (float) $data['amount'];
+            $paymentMethods = $this->parsePaymentMethodsInput($request, $amount, 'payment_method');
+            $data['proof_path'] = $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
                 ? $request->file('proof_photo')?->store('expense-proofs', 'public')
                 : null;
             $data['registered_by'] = $request->user()?->id;
             $data['created_at'] = now();
             $data['updated_at'] = now();
+            unset($data['payment_methods']);
+            $this->applyPaymentMethodsToExpenseRow($data, $paymentMethods);
             DB::table('gym_expenses')->insert($data);
         }
 
@@ -1735,6 +2078,7 @@ class GymController extends Controller
 
         return response()->json($query->limit(80)->get()->map(function ($expense) {
             $expense->proof_url = $expense->proof_path ? Storage::disk('public')->url($expense->proof_path) : null;
+            $expense->payment_methods = $this->decodePaymentMethodsColumn($expense->payment_methods ?? null);
 
             return $expense;
         }));
@@ -1963,6 +2307,7 @@ class GymController extends Controller
         $payment->balance_due = round(max(0, $amount - $amountPaid), 2);
         $payment->proof_url = $payment->proof_path ? Storage::disk('public')->url($payment->proof_path) : null;
         $payment->payer_name = $payment->customer_name ?? ($payment->payer_display ?? $payment->member_name ?? null);
+        $payment->payment_methods = $this->decodePaymentMethodsColumn($payment->payment_methods ?? null);
 
         return $payment;
     }
