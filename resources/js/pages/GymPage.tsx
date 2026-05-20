@@ -2,7 +2,7 @@
 import { AlertTriangle, BadgeCheck, Banknote, Bell, CalendarDays, Dumbbell, Edit3, Eye, IdCard, LayoutDashboard, LogOut, Menu, MessageCircle, PackageCheck, Plus, QrCode, Search, ShieldCheck, Trash2, Trophy, Users, X } from "lucide-react";
 import { httpClient } from "../http/client";
 import { parseApiError, registerHttpErrorHandlers } from "../http/api-errors";
-import { SearchableSelect } from "../components/SearchableSelect";
+import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { PaymentMethodsFields } from "../components/PaymentMethodsFields";
 import { appendPaymentMethodsToFormData, defaultPaymentMethods, normalizePaymentMethodLines, parsePaymentMethods, paymentMethodsLabel } from "../lib/paymentMethods";
 import {
@@ -13,6 +13,7 @@ import {
   memberOptions,
   memberRecordStatusOptions,
   memberStatusFilterOptions,
+  membershipStatusFilterOptions,
   pageSizeOptions,
   pageSizeOptionsLarge,
   paymentMethodOptions,
@@ -339,7 +340,10 @@ function formatCell(column: string, value: unknown, row?: AnyRow) {
     const map = column === "type" ? cellTranslations.movement_type : cellTranslations.payment_status;
     if (map?.[String(value)]) return map[String(value)];
   }
-  if (cellTranslations[column]?.[String(value)]) return column === "status" || column === "display_status" ? <StatusBadge value={String(value)} /> : cellTranslations[column][String(value)];
+  if (column === "display_status") {
+    return <StatusBadge value={membershipStatusForDisplay(row)} />;
+  }
+  if (cellTranslations[column]?.[String(value)]) return column === "status" ? <StatusBadge value={String(value)} /> : cellTranslations[column][String(value)];
   return String(value ?? "-");
 }
 
@@ -349,9 +353,13 @@ function StatusBadge({ value }: { value: string }) {
     ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
     : value === "cancelled" || value === "blocked" || value === "damaged"
       ? "bg-red-50 text-red-700 ring-red-200"
-      : value === "pending" || value === "maintenance" || value === "trial"
-        ? "bg-amber-50 text-amber-700 ring-amber-200"
-        : "bg-zinc-100 text-zinc-700 ring-zinc-200";
+      : value === "expired" || value === "overdue" || value === "inactive"
+        ? "bg-zinc-200 text-zinc-700 ring-zinc-300"
+        : value === "replaced"
+          ? "bg-slate-100 text-slate-600 ring-slate-200"
+          : value === "pending" || value === "maintenance" || value === "trial"
+            ? "bg-amber-50 text-amber-700 ring-amber-200"
+            : "bg-zinc-100 text-zinc-700 ring-zinc-200";
 
   return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-black ring-1 ${classes}`}>{label}</span>;
 }
@@ -590,6 +598,17 @@ function whatsappUrl(phone: unknown, message: string) {
 
 function membershipEffectiveStatus(membership: AnyRow) {
   return String(membership.display_status ?? membership.status ?? "");
+}
+
+function membershipStatusForDisplay(row?: AnyRow) {
+  if (!row) return "";
+  if (row.display_status) return String(row.display_status);
+  const status = String(row.status ?? "");
+  if (status !== "active") return status;
+  const today = new Date().toISOString().slice(0, 10);
+  if (String(row.ends_on ?? "") < today) return "expired";
+  if (String(row.starts_on ?? "") > today) return "pending";
+  return "active";
 }
 
 function memberActiveMembership(member: AnyRow, memberships: AnyRow[]) {
@@ -1586,13 +1605,13 @@ export function GymPage() {
             </div>
           </Module> : null}
           {tab === "plans" ? <Module title="Planes" subtitle="Membresías, precios, duración y beneficios comerciales." onNew={openNewPlan} newLabel="Nuevo plan"><DataTable title="Planes del gimnasio" rows={plans} columns={["code", "name", "price", "duration_days", "grace_days", "daily_access_limit", "includes_classes", "includes_trainer", "is_active"]} action={(row) => <ActionButtons onEdit={() => openEditPlan(row)} onDelete={() => confirmDeletePlan(row)} />} /></Module> : null}
-          {tab === "memberships" ? <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={() => setSaleModalOpen(true)} newLabel="Nueva venta"><DataTable title="Membresías activadas" rows={memberships} columns={["member_name", "plan_name", "branch_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => <ActionButtons onEdit={() => openEditMembership(row)} onDelete={() => confirmDeleteMembership(row)} />} /></Module> : null}
+          {tab === "memberships" ? <MembershipsModule rows={memberships} branches={branches} plans={plans} onNew={() => setSaleModalOpen(true)} onEdit={openEditMembership} onDelete={confirmDeleteMembership} /> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} action={(row) => <ActionButtons onDelete={() => confirmDeleteAttendance(row)} />} /></Module> : null}
           {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} /> : null}
           {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); setProductSaleForm({ ...emptyProductSale, sale_date: new Date().toISOString().slice(0, 10) }); setProductSaleModalOpen(true); }} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos." onNew={openNewEquipment} newLabel="Nuevo equipo"><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} action={(row) => <ActionButtons onEdit={() => openEditEquipment(row)} onDelete={() => confirmDeleteEquipment(row)} />} /></Module> : null}
           {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} branches={branches} branchFilter={financeBranchFilter} onBranchFilterChange={setFinanceBranchFilter} onNewIncome={() => { setIncomeForm((current) => ({ ...current, branch_id: defaultBranchId(user, branches), payment_methods: defaultPaymentMethods(String(current.amount || "")) })); setIncomeModalOpen(true); }} onNewExpense={() => setExpenseModalOpen(true)} onCollectPayment={openCollectPayment} onViewMembership={openMembershipFromCash} /> : null}
-          {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} /> : null}
+          {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} onNotify={setMessage} /> : null}
         </section>
       </main>
 
@@ -1763,6 +1782,69 @@ function Module({ title, subtitle, children, onNew, newLabel }: { title: string;
       </div>
       {children}
     </div>
+  );
+}
+
+function MembershipsModule({ rows, branches, plans, onNew, onEdit, onDelete }: { rows: AnyRow[]; branches: AnyRow[]; plans: AnyRow[]; onNew: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void }) {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [branchFilter, setBranchFilter] = useState("");
+  const [planFilter, setPlanFilter] = useState("");
+
+  const planFilterOptions = useMemo<SearchableSelectOption[]>(() => {
+    const fromCatalog = plans.map((plan) => ({ value: String(plan.id), label: String(plan.name ?? plan.code ?? plan.id) }));
+    const known = new Set(fromCatalog.map((item) => item.value));
+    rows.forEach((row) => {
+      const id = String(row.plan_id ?? "");
+      if (id && !known.has(id)) {
+        known.add(id);
+        fromCatalog.push({ value: id, label: String(row.plan_name ?? id) });
+      }
+    });
+    return fromCatalog.sort((a, b) => a.label.localeCompare(b.label, "es"));
+  }, [plans, rows]);
+
+  const filteredRows = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return rows.filter((row) => {
+      const effectiveStatus = membershipStatusForDisplay(row);
+      if (statusFilter && effectiveStatus !== statusFilter) return false;
+      if (branchFilter && String(row.branch_id ?? "") !== branchFilter) return false;
+      if (planFilter && String(row.plan_id ?? "") !== planFilter) return false;
+      if (!term) return true;
+      const haystack = [row.member_name, row.plan_name, row.branch_name, row.starts_on, row.ends_on, row.price, row.discount]
+        .map((item) => String(item ?? "").toLowerCase())
+        .join(" ");
+      return haystack.includes(term);
+    });
+  }, [rows, search, statusFilter, branchFilter, planFilter]);
+
+  return (
+    <Module title="Membresías" subtitle="Ventas, renovaciones y activaciones de socios." onNew={onNew} newLabel="Nueva venta">
+      <div className="mb-4 grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 lg:grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))]">
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          <span>Buscar</span>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Socio, plan, sede o fecha..." className={fieldClass("w-full pl-10")} />
+          </div>
+        </label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          <span>Estado</span>
+          <SearchableSelect value={statusFilter} onChange={setStatusFilter} options={membershipStatusFilterOptions.slice(1)} emptyOption={membershipStatusFilterOptions[0]} className={fieldClass("w-full")} />
+        </label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          <span>Sede</span>
+          <SearchableSelect value={branchFilter} onChange={setBranchFilter} options={branchOptions(branches)} emptyOption={{ value: "", label: "Todas las sedes" }} className={fieldClass("w-full")} />
+        </label>
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+          <span>Plan</span>
+          <SearchableSelect value={planFilter} onChange={setPlanFilter} options={planFilterOptions} emptyOption={{ value: "", label: "Todos los planes" }} className={fieldClass("w-full")} />
+        </label>
+      </div>
+      <p className="mb-3 text-sm font-semibold text-zinc-500">Mostrando {filteredRows.length} de {rows.length} membresías</p>
+      <DataTable title="Membresías activadas" rows={filteredRows} columns={["member_name", "plan_name", "branch_name", "starts_on", "ends_on", "price", "discount", "display_status"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
+    </Module>
   );
 }
 
@@ -2255,7 +2337,7 @@ function ClassModal({ open, editing, form, branches, onChange, onClose, onSubmit
   );
 }
 
-function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promise<void> }) {
+function SystemAdminPanel({ data, reload, onNotify }: { data: AnyRow; reload: () => Promise<void>; onNotify: (message: string) => void }) {
   const tenants: AnyRow[] = data.tenants ?? [];
   const modules: AnyRow[] = data.modules ?? [];
   const roles: AnyRow[] = data.roles ?? [];
@@ -2279,6 +2361,7 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
   const [branchPage, setBranchPage] = useState(1);
   const [userPage, setUserPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const branchEditorRef = useRef<HTMLFormElement | null>(null);
 
   useEffect(() => {
     if (adminRole?.id && !userForm.role_id) {
@@ -2307,8 +2390,19 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
   }
 
   function openEditBranch(branch: AnyRow) {
-    setEditingBranchId(branch.id);
-    setBranchForm({ ...emptyBranch, ...branch });
+    setEditingBranchId(Number(branch.id));
+    setBranchForm({
+      tenant_id: String(branch.tenant_id ?? ""),
+      name: String(branch.name ?? ""),
+      phone: String(branch.phone ?? ""),
+      email: String(branch.email ?? ""),
+      address: String(branch.address ?? ""),
+      city: String(branch.city ?? "Lima"),
+      opening_hours: String(branch.opening_hours ?? ""),
+      capacity: String(branch.capacity ?? "120"),
+      is_active: branch.is_active !== false && branch.is_active !== 0,
+    });
+    window.setTimeout(() => branchEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
   }
 
   function openEditUser(user: AnyRow) {
@@ -2340,14 +2434,30 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
 
   async function saveBranch(event: FormEvent) {
     event.preventDefault();
-    const payload = { ...branchForm, capacity: Number(branchForm.capacity) };
-    if (editingBranchId) {
-      await httpClient.put(`/api/gym/saas/branches/${editingBranchId}`, payload);
-    } else {
-      await httpClient.post("/api/gym/saas/branches", payload);
+    const payload = {
+      tenant_id: Number(branchForm.tenant_id),
+      name: String(branchForm.name ?? "").trim(),
+      phone: String(branchForm.phone ?? "").trim() || null,
+      email: String(branchForm.email ?? "").trim() || null,
+      address: String(branchForm.address ?? "").trim() || "Sin dirección",
+      city: String(branchForm.city ?? "").trim() || "Lima",
+      opening_hours: String(branchForm.opening_hours ?? "").trim() || null,
+      capacity: Math.max(1, Number(branchForm.capacity) || 1),
+      is_active: Boolean(branchForm.is_active),
+    };
+    try {
+      if (editingBranchId) {
+        await httpClient.put(`/api/gym/saas/branches/${editingBranchId}`, payload);
+        onNotify("Sede actualizada correctamente.");
+      } else {
+        await httpClient.post("/api/gym/saas/branches", payload);
+        onNotify("Sede creada correctamente.");
+      }
+      resetBranchForm();
+      await reload();
+    } catch {
+      // El interceptor global muestra el detalle del error de validación.
     }
-    resetBranchForm();
-    await reload();
   }
 
   async function saveUser(event: FormEvent) {
@@ -2416,14 +2526,21 @@ function SystemAdminPanel({ data, reload }: { data: AnyRow; reload: () => Promis
           </div>
         </form>
 
-        <form onSubmit={saveBranch} className={cardClass()}>
-          <h3 className="text-lg font-black">{editingBranchId ? "Editar sede" : "Nueva sede"}</h3>
+        <form ref={branchEditorRef} onSubmit={saveBranch} className={`${cardClass()} ${editingBranchId ? "ring-2 ring-[#ffcc00]" : ""}`}>
+          <h3 className="text-lg font-black">{editingBranchId ? `Editar sede #${editingBranchId}` : "Nueva sede"}</h3>
+          {editingBranchId ? <p className="mt-1 text-sm font-semibold text-zinc-500">Modifica los datos y pulsa Guardar sede.</p> : null}
           <div className="mt-3 grid gap-3">
             <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Cliente</RequiredLabel><SearchableSelect required value={String(branchForm.tenant_id ?? "")} onChange={(value) => setBranchForm({ ...branchForm, tenant_id: value })} options={tenantOptions(tenants)} emptyOption={{ value: "", label: "Seleccione cliente" }} className={fieldClass()} /></label>
             <Field label="Nombre de sede" value={branchForm.name} onChange={(value) => setBranchForm({ ...branchForm, name: value })} required />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Teléfono" value={branchForm.phone} onChange={(value) => setBranchForm({ ...branchForm, phone: value })} />
+              <Field label="Correo" type="email" value={branchForm.email} onChange={(value) => setBranchForm({ ...branchForm, email: value })} />
+            </div>
             <Field label="Dirección" value={branchForm.address} onChange={(value) => setBranchForm({ ...branchForm, address: value })} required />
             <Field label="Ciudad" value={branchForm.city} onChange={(value) => setBranchForm({ ...branchForm, city: value })} required />
+            <Field label="Horario" value={branchForm.opening_hours} onChange={(value) => setBranchForm({ ...branchForm, opening_hours: value })} />
             <Field label="Aforo" type="number" value={branchForm.capacity} onChange={(value) => setBranchForm({ ...branchForm, capacity: value })} required />
+            <label className="flex items-center gap-2 rounded-2xl bg-zinc-50 p-4 text-sm font-bold"><input type="checkbox" checked={Boolean(branchForm.is_active)} onChange={(event) => setBranchForm({ ...branchForm, is_active: event.target.checked })} /> Sede activa</label>
             <FormActions onClose={resetBranchForm} submitLabel={editingBranchId ? "Guardar sede" : "Crear sede"} />
           </div>
         </form>
@@ -2834,4 +2951,5 @@ function ErrorModal({ state, onClose, onGoToLogin }: { state: ErrorState; onClos
 function BottomNav({ tab, tabs, onSelect }: { tab: Tab; tabs: { id: Tab; label: string; icon: any }[]; onSelect: (tab: Tab) => void }) {
   return <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/95 px-2 py-2 shadow-[0_-10px_30px_rgba(0,0,0,0.08)] backdrop-blur-xl lg:hidden"><div className="mx-auto grid max-w-md grid-cols-4 gap-1">{tabs.slice(0, 4).map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => onSelect(item.id)} className={`rounded-2xl px-2 py-2 text-[10px] font-black ${tab === item.id ? "bg-[#ffcc00] text-zinc-950" : "text-zinc-500"}`}><Icon className="mx-auto mb-1 h-5 w-5" />{item.label}</button>; })}</div></nav>;
 }
+
 

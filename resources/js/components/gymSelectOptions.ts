@@ -2,6 +2,15 @@ import type { SearchableSelectOption } from "./SearchableSelect";
 
 type AnyRow = Record<string, unknown>;
 
+export const membershipStatusFilterOptions: SearchableSelectOption[] = [
+  { value: "", label: "Todos los estados" },
+  { value: "active", label: "Activo" },
+  { value: "expired", label: "Vencido" },
+  { value: "pending", label: "Pendiente" },
+  { value: "cancelled", label: "Cancelado" },
+  { value: "replaced", label: "Reemplazado" },
+];
+
 export const memberStatusFilterOptions: SearchableSelectOption[] = [
   { value: "", label: "Todos" },
   { value: "active", label: "Activo" },
