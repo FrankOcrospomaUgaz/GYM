@@ -217,6 +217,7 @@ class GymSeeder extends Seeder
         }
 
         $memberRows = [
+            ['M-VAR', 'Clientes', 'Varios', '00000001', null, '900000001', 'Ventas sin socio identificado', 'active'],
             ['M-0001', 'Andrea', 'Paredes', '76543210', 'andrea@mail.test', '987111111', 'Bajar grasa y tonificar', 'active'],
             ['M-0002', 'Luis', 'Cáceres', '71543210', 'luis@mail.test', '987222222', 'Ganar masa muscular', 'active'],
             ['M-0003', 'María', 'Quispe', '70543210', 'maria@mail.test', '987333333', 'Mejorar resistencia', 'active'],

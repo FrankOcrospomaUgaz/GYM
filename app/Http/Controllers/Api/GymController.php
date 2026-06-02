@@ -1311,10 +1311,20 @@ class GymController extends Controller
         return response()->json($query->get());
     }
 
+    public function nextProductCode(Request $request): JsonResponse
+    {
+        $tenantId = $this->defaultTenantId($request);
+
+        return response()->json([
+            'code' => $this->generateNextProductCode($tenantId),
+        ]);
+    }
+
     public function storeProduct(Request $request): JsonResponse
     {
+        $tenantId = $this->defaultTenantId($request);
         $data = $request->validate([
-            'code' => ['required', 'string', 'max:50'],
+            'code' => ['nullable', 'string', 'max:50'],
             'name' => ['required', 'string', 'max:120'],
             'description' => ['nullable', 'string', 'max:1000'],
             'unit_cost' => ['required', 'numeric', 'min:0'],
@@ -1325,7 +1335,7 @@ class GymController extends Controller
             'is_active' => ['required', 'boolean'],
         ]);
 
-        $tenantId = $this->defaultTenantId($request);
+        $data['code'] = trim((string) ($data['code'] ?? '')) ?: $this->generateNextProductCode($tenantId);
         abort_unless(! DB::table('gym_products')->where('tenant_id', $tenantId)->where('code', $data['code'])->exists(), 422, 'El código ya existe para este cliente.');
 
         $data['tenant_id'] = $tenantId;
@@ -1562,7 +1572,12 @@ class GymController extends Controller
                 'updated_at' => now(),
             ]);
 
-            return response()->json(['sale_id' => $saleId, 'payment_id' => $paymentId], 201);
+            return response()->json([
+                'sale_id' => $saleId,
+                'payment_id' => $paymentId,
+                'stock_alert' => $this->productStockAlertPayload($product, $newStock),
+                'low_stock_products' => $this->lowStockProductsPayload($request, $tenantId),
+            ], 201);
         });
     }
 
@@ -1743,6 +1758,8 @@ class GymController extends Controller
             ->map(function ($subscription) {
                 $subscription->selected_days = json_decode((string) $subscription->selected_days, true) ?: [];
                 $subscription->day_schedules = json_decode((string) ($subscription->day_schedules ?? ''), true) ?: [];
+                $subscription->schedule_mode = $subscription->schedule_mode ?? 'weekly';
+                $subscription->week_schedules = json_decode((string) ($subscription->week_schedules ?? ''), true) ?: [];
                 $proofPath = $subscription->payment_proof_path ?: $subscription->proof_path;
                 $subscription->proof_url = $proofPath ? Storage::disk('public')->url($proofPath) : null;
                 $subscription->payment_methods = $this->decodePaymentMethodsColumn($subscription->payment_methods ?? null);
@@ -1765,7 +1782,8 @@ class GymController extends Controller
         [$data, $starts, $selectedDays, $daySchedules, $preferredTime] = $this->validatedTrainingSubscription($request);
         abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
         $tenantId = $this->defaultTenantId($request);
-        $this->abortIfDuplicateTrainingSubscription($tenantId, (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules);
+        [$scheduleMode, $weekSchedules] = $this->trainingScheduleMetaFromValidation($request);
+        $this->abortIfDuplicateTrainingSubscription($tenantId, (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules, null, $scheduleMode, $weekSchedules);
         $paymentMethods = $this->parsePaymentMethodsInput($request, (float) $data['monthly_fee'], 'payment_method');
         $data['payment_method'] = $this->primaryPaymentMethodFromSplits($paymentMethods);
         $proofPath = $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
@@ -1775,26 +1793,8 @@ class GymController extends Controller
             abort_unless($request->hasFile('proof_photo'), 422, 'Adjunte el comprobante de pago para medios distintos a efectivo.');
         }
 
-        return DB::transaction(function () use ($request, $data, $tenantId, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath, $paymentMethods): JsonResponse {
-            $id = DB::table('gym_training_subscriptions')->insertGetId([
-                'tenant_id' => $tenantId,
-                'member_id' => $data['member_id'],
-                'discipline' => $data['discipline'],
-                'monthly_fee' => $data['monthly_fee'],
-                'starts_on' => $starts->toDateString(),
-                'ends_on' => $starts->copy()->addMonthNoOverflow()->subDay()->toDateString(),
-                'selected_days' => json_encode($selectedDays),
-                'day_schedules' => json_encode(collect($daySchedules)->only($selectedDays)->all()),
-                'preferred_time' => $preferredTime,
-                'sessions_per_week' => $data['sessions_per_week'],
-                'payment_method' => $data['payment_method'],
-                'proof_path' => $proofPath,
-                'status' => 'active',
-                'notes' => $data['notes'] ?? null,
-                'registered_by' => $request->user()?->id,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+        return DB::transaction(function () use ($request, $data, $tenantId, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath, $paymentMethods, $scheduleMode, $weekSchedules): JsonResponse {
+            $id = DB::table('gym_training_subscriptions')->insertGetId($this->trainingSubscriptionPayload($request, $data, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath, $scheduleMode, $weekSchedules, 'active'));
 
             $paymentRow = [
                 'tenant_id' => $tenantId,
@@ -1823,7 +1823,8 @@ class GymController extends Controller
     {
         [$data, $starts, $selectedDays, $daySchedules, $preferredTime] = $this->validatedTrainingSubscription($request);
         abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
-        $this->abortIfDuplicateTrainingSubscription($this->defaultTenantId($request), (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules, $subscription);
+        [$scheduleMode, $weekSchedules] = $this->trainingScheduleMetaFromValidation($request);
+        $this->abortIfDuplicateTrainingSubscription($this->defaultTenantId($request), (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules, $subscription, $scheduleMode, $weekSchedules);
 
         $current = $this->scopeTenant(DB::table('gym_training_subscriptions')->where('id', $subscription), $request, 'gym_training_subscriptions')->first();
         abort_unless($current !== null, 404, 'Mensualidad no encontrada.');
@@ -1837,22 +1838,9 @@ class GymController extends Controller
             abort(422, 'Adjunte el comprobante de pago para medios distintos a efectivo.');
         }
 
-        $payload = [
-            'member_id' => $data['member_id'],
-            'discipline' => $data['discipline'],
-            'monthly_fee' => $data['monthly_fee'],
-            'starts_on' => $starts->toDateString(),
-            'ends_on' => $starts->copy()->addMonthNoOverflow()->subDay()->toDateString(),
-            'selected_days' => json_encode($selectedDays),
-            'day_schedules' => json_encode(collect($daySchedules)->only($selectedDays)->all()),
-            'preferred_time' => $preferredTime,
-            'sessions_per_week' => $data['sessions_per_week'],
-            'payment_method' => $data['payment_method'],
-            'proof_path' => $proofPath,
-            'status' => $data['status'] ?? 'active',
-            'notes' => $data['notes'] ?? null,
-            'updated_at' => now(),
-        ];
+        $payload = $this->trainingSubscriptionPayload($request, $data, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath, $scheduleMode, $weekSchedules, (string) ($data['status'] ?? 'active'));
+        unset($payload['tenant_id'], $payload['registered_by'], $payload['created_at']);
+        $payload['updated_at'] = now();
 
         $this->scopeTenant(DB::table('gym_training_subscriptions')->where('id', $subscription), $request, 'gym_training_subscriptions')->update($payload);
 
@@ -1906,39 +1894,140 @@ class GymController extends Controller
             $request->merge(['payment_method' => $request->input('method')]);
         }
 
-        $data = $request->validate([
+        $scheduleMode = (string) $request->input('schedule_mode', 'weekly');
+        if (! in_array($scheduleMode, ['weekly', 'monthly'], true)) {
+            abort(response()->json(['message' => 'Modo de configuración inválido.'], 422));
+        }
+
+        $rules = [
             'member_id' => ['required', 'exists:gym_members,id'],
             'discipline' => ['required', 'string', 'max:120'],
             'monthly_fee' => ['required', 'numeric', 'min:0.01'],
             'starts_on' => ['required', 'date'],
-            'selected_days' => ['required', 'array', 'min:1'],
-            'selected_days.*' => ['required', Rule::in(['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'])],
-            'sessions_per_week' => ['required', 'integer', 'min:1', 'max:7'],
-            'day_schedules' => ['required', 'json'],
+            'schedule_mode' => ['nullable', Rule::in(['weekly', 'monthly'])],
             'payment_method' => ['nullable', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin', 'mixed'])],
             'payment_methods' => ['nullable'],
             'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
             'status' => ['nullable', Rule::in(['active', 'inactive', 'cancelled', 'expired'])],
             'notes' => ['nullable', 'string'],
-        ]);
+        ];
 
+        if ($scheduleMode === 'monthly') {
+            $rules['week_schedules'] = ['required', 'json'];
+            $rules['selected_days'] = ['nullable', 'array'];
+            $rules['day_schedules'] = ['nullable', 'json'];
+            $rules['sessions_per_week'] = ['nullable', 'integer', 'min:1', 'max:7'];
+        } else {
+            $rules['selected_days'] = ['required', 'array', 'min:1'];
+            $rules['selected_days.*'] = ['required', Rule::in(['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'])];
+            $rules['sessions_per_week'] = ['required', 'integer', 'min:1', 'max:7'];
+            $rules['day_schedules'] = ['required', 'json'];
+        }
+
+        $data = $request->validate($rules);
+        $data['schedule_mode'] = $scheduleMode;
         $starts = Carbon::parse($data['starts_on']);
-        $selectedDays = array_values($data['selected_days']);
-        if (count($selectedDays) !== (int) $data['sessions_per_week']) {
-            abort(response()->json(['message' => 'La cantidad de días seleccionados debe coincidir con las sesiones por semana.'], 422));
-        }
+        $weekdayLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 
-        $daySchedules = (array) json_decode((string) $data['day_schedules'], true);
-        foreach ($selectedDays as $day) {
-            $range = (array) ($daySchedules[$day] ?? []);
-            $start = (string) ($range['start'] ?? '');
-            $end = (string) ($range['end'] ?? '');
-            if (! preg_match('/^\d{2}:\d{2}$/', $start) || ! preg_match('/^\d{2}:\d{2}$/', $end) || $end <= $start) {
-                abort(response()->json(['message' => "Configure un rango horario válido para {$day}."], 422));
+        if ($scheduleMode === 'monthly') {
+            $weekSchedules = (array) json_decode((string) $request->input('week_schedules', '[]'), true);
+            abort_unless($weekSchedules !== [], 422, 'Configure al menos una semana del mes.');
+            $selectedDays = [];
+            $daySchedules = [];
+            $sessionsPerWeek = 0;
+            $normalizedWeeks = [];
+
+            foreach ($weekSchedules as $index => $week) {
+                if (! is_array($week)) {
+                    continue;
+                }
+                $weekDays = array_values(array_unique(array_filter((array) ($week['selected_days'] ?? []))));
+                abort_unless($weekDays !== [], 422, 'La semana '.($index + 1).' debe tener al menos un día seleccionado.');
+                $weekScheduleMap = [];
+                foreach ($weekDays as $day) {
+                    abort_unless(in_array($day, $weekdayLabels, true), 422, 'Día inválido en la semana '.($index + 1).'.');
+                    $range = $this->validatedTrainingDaySchedule((array) ($week['day_schedules'][$day] ?? []), $day);
+                    $weekScheduleMap[$day] = $range;
+                    $daySchedules[$day] = $range;
+                    $selectedDays[] = $day;
+                }
+                $sessionsPerWeek = max($sessionsPerWeek, count($weekDays));
+                $normalizedWeeks[] = [
+                    'selected_days' => $weekDays,
+                    'day_schedules' => $weekScheduleMap,
+                ];
             }
+
+            abort_unless($normalizedWeeks !== [], 422, 'Configure al menos una semana del mes.');
+            $request->attributes->set('training_week_schedules', $normalizedWeeks);
+            $data['sessions_per_week'] = $sessionsPerWeek;
+            $selectedDays = array_values(array_unique($selectedDays));
+        } else {
+            $selectedDays = array_values($data['selected_days'] ?? []);
+            if (count($selectedDays) !== (int) $data['sessions_per_week']) {
+                abort(response()->json(['message' => 'La cantidad de días seleccionados debe coincidir con las sesiones por semana.'], 422));
+            }
+            $daySchedules = (array) json_decode((string) $data['day_schedules'], true);
+            foreach ($selectedDays as $day) {
+                $daySchedules[$day] = $this->validatedTrainingDaySchedule((array) ($daySchedules[$day] ?? []), $day);
+            }
+            $request->attributes->set('training_week_schedules', []);
         }
 
-        return [$data, $starts, $selectedDays, $daySchedules, (string) (($daySchedules[$selectedDays[0]]['start'] ?? '07:00'))];
+        $preferredTime = (string) (($daySchedules[$selectedDays[0]]['start'] ?? '07:00'));
+
+        return [$data, $starts, $selectedDays, $daySchedules, $preferredTime];
+    }
+
+    private function validatedTrainingDaySchedule(array $range, string $day): array
+    {
+        $start = (string) ($range['start'] ?? '');
+        $end = (string) ($range['end'] ?? '');
+        if (! preg_match('/^\d{2}:\d{2}$/', $start) || ! preg_match('/^\d{2}:\d{2}$/', $end) || $end <= $start) {
+            abort(response()->json(['message' => "Configure un rango horario válido para {$day}."], 422));
+        }
+
+        return ['start' => $start, 'end' => $end];
+    }
+
+    private function trainingScheduleMetaFromValidation(Request $request): array
+    {
+        $scheduleMode = (string) $request->input('schedule_mode', 'weekly');
+        $weekSchedules = $request->attributes->get('training_week_schedules', []);
+
+        return [$scheduleMode, is_array($weekSchedules) ? $weekSchedules : []];
+    }
+
+    private function trainingSubscriptionPayload(Request $request, array $data, Carbon $starts, array $selectedDays, array $daySchedules, string $preferredTime, ?string $proofPath, string $scheduleMode, array $weekSchedules, string $status): array
+    {
+        $payload = [
+            'tenant_id' => $this->defaultTenantId($request),
+            'member_id' => $data['member_id'],
+            'discipline' => $data['discipline'],
+            'monthly_fee' => $data['monthly_fee'],
+            'starts_on' => $starts->toDateString(),
+            'ends_on' => $starts->copy()->addMonthNoOverflow()->subDay()->toDateString(),
+            'selected_days' => json_encode($selectedDays),
+            'day_schedules' => json_encode(collect($daySchedules)->only($selectedDays)->all()),
+            'preferred_time' => $preferredTime,
+            'sessions_per_week' => $data['sessions_per_week'],
+            'payment_method' => $data['payment_method'],
+            'proof_path' => $proofPath,
+            'status' => $status,
+            'notes' => $data['notes'] ?? null,
+            'registered_by' => $request->user()?->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        if ($this->tableHasColumn('gym_training_subscriptions', 'schedule_mode')) {
+            $payload['schedule_mode'] = $scheduleMode;
+        }
+        if ($this->tableHasColumn('gym_training_subscriptions', 'week_schedules')) {
+            $payload['week_schedules'] = $scheduleMode === 'monthly' ? json_encode($weekSchedules, JSON_UNESCAPED_UNICODE) : null;
+        }
+
+        return $payload;
     }
 
     private function nextPaymentReceiptNumber(): string
@@ -1946,7 +2035,7 @@ class GymController extends Controller
         return 'B001-'.str_pad((string) (((int) DB::table('gym_payments')->max('id')) + 1), 5, '0', STR_PAD_LEFT);
     }
 
-    private function abortIfDuplicateTrainingSubscription(?int $tenantId, int $memberId, string $discipline, string $startsOn, array $selectedDays, array $daySchedules, ?int $ignoreId = null): void
+    private function abortIfDuplicateTrainingSubscription(?int $tenantId, int $memberId, string $discipline, string $startsOn, array $selectedDays, array $daySchedules, ?int $ignoreId = null, string $scheduleMode = 'weekly', array $weekSchedules = []): void
     {
         $query = DB::table('gym_training_subscriptions')
             ->where('tenant_id', $tenantId)
@@ -1961,7 +2050,14 @@ class GymController extends Controller
 
         $normalizedDays = json_encode(array_values($selectedDays));
         $normalizedSchedules = json_encode(collect($daySchedules)->only($selectedDays)->all());
-        $duplicate = $query->get()->contains(function ($row) use ($normalizedDays, $normalizedSchedules): bool {
+        $normalizedWeeks = json_encode($weekSchedules, JSON_UNESCAPED_UNICODE);
+        $duplicate = $query->get()->contains(function ($row) use ($normalizedDays, $normalizedSchedules, $scheduleMode, $normalizedWeeks): bool {
+            $rowMode = (string) ($row->schedule_mode ?? 'weekly');
+            if ($scheduleMode === 'monthly' || $rowMode === 'monthly') {
+                return $rowMode === $scheduleMode
+                    && (string) ($row->week_schedules ?? '') === $normalizedWeeks;
+            }
+
             return (string) $row->selected_days === $normalizedDays
                 && (string) ($row->day_schedules ?? '') === $normalizedSchedules;
         });
@@ -2446,6 +2542,75 @@ class GymController extends Controller
         $branchId = DB::table('gym_members')->where('id', $memberId)->value('branch_id');
 
         return $branchId ? (int) $branchId : null;
+    }
+
+    private function generateNextProductCode(?int $tenantId): string
+    {
+        $query = DB::table('gym_products');
+        if ($tenantId !== null) {
+            $query->where('tenant_id', $tenantId);
+        }
+
+        $maxNumber = 0;
+        foreach ($query->pluck('code') as $code) {
+            if (preg_match('/^P-(\d+)$/i', (string) $code, $matches)) {
+                $maxNumber = max($maxNumber, (int) $matches[1]);
+            }
+        }
+
+        $fallback = ((int) $query->max('id')) + 1;
+
+        return 'P-'.str_pad((string) max($maxNumber + 1, $fallback), 4, '0', STR_PAD_LEFT);
+    }
+
+    private function productStockAlertPayload(object $product, float $newStock): ?array
+    {
+        if ($product->min_stock === null) {
+            return null;
+        }
+
+        $minStock = (float) $product->min_stock;
+        if ($newStock > $minStock) {
+            return null;
+        }
+
+        return [
+            'product_id' => (int) $product->id,
+            'product_name' => (string) $product->name,
+            'stock_remaining' => $newStock,
+            'min_stock' => $minStock,
+            'at_minimum' => $newStock <= $minStock,
+            'below_minimum' => $newStock < $minStock,
+        ];
+    }
+
+    private function lowStockProductsPayload(Request $request, ?int $tenantId): array
+    {
+        if (! Schema::hasTable('gym_products')) {
+            return [];
+        }
+
+        $query = $this->scopeTenant(DB::table('gym_products'), $request, 'gym_products')
+            ->where('is_active', true)
+            ->whereNotNull('min_stock')
+            ->whereColumn('stock', '<=', 'min_stock')
+            ->select('id', 'name', 'code', 'stock', 'min_stock')
+            ->orderBy('name');
+        $this->scopeBranches($query, $request, 'gym_products');
+
+        if ($tenantId !== null) {
+            $query->where('tenant_id', $tenantId);
+        }
+
+        return $query->get()->map(function ($row) {
+            return [
+                'id' => (int) $row->id,
+                'name' => (string) $row->name,
+                'code' => (string) $row->code,
+                'stock' => (float) $row->stock,
+                'min_stock' => (float) $row->min_stock,
+            ];
+        })->values()->all();
     }
 
     private function serializeGymTimestamp(mixed $value): ?string

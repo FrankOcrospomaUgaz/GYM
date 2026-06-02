@@ -56,6 +56,7 @@ Route::middleware('auth')->group(function (): void {
         Route::put('equipment/{equipment}', [GymController::class, 'updateEquipment']);
         Route::delete('equipment/{equipment}', [GymController::class, 'destroyEquipment']);
         Route::get('products', [GymController::class, 'products']);
+        Route::get('products/next-code', [GymController::class, 'nextProductCode']);
         Route::post('products', [GymController::class, 'storeProduct']);
         Route::put('products/{product}', [GymController::class, 'updateProduct']);
         Route::delete('products/{product}', [GymController::class, 'destroyProduct']);

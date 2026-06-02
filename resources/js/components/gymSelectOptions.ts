@@ -144,6 +144,19 @@ export function memberOptions(members: AnyRow[], short = false): SearchableSelec
   }));
 }
 
+const walkInSaleMemberPatterns = [/clientes?\s+varios/i, /consumidor\s+final/i, /^varios$/i, /cliente\s+vario/i];
+
+export function defaultWalkInSaleMemberId(members: AnyRow[]): string {
+  for (const member of members) {
+    const fullName = `${member.first_name ?? ""} ${member.last_name ?? ""}`.trim();
+    const haystack = `${fullName} ${member.member_code ?? ""} ${member.dni ?? ""}`.trim();
+    if (walkInSaleMemberPatterns.some((pattern) => pattern.test(haystack))) {
+      return String(member.id);
+    }
+  }
+  return "";
+}
+
 export function planOptions(plans: AnyRow[], money: (value: unknown) => string): SearchableSelectOption[] {
   return plans
     .filter((plan) => plan.is_active)

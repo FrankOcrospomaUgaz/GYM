@@ -5,11 +5,23 @@ import { parseApiError, registerHttpErrorHandlers } from "../http/api-errors";
 import { SearchableSelect, type SearchableSelectOption } from "../components/SearchableSelect";
 import { PaymentMethodsFields } from "../components/PaymentMethodsFields";
 import { currentMonthRangeInLima, dateKeyInLima, formatGymDateTime, todayInLima } from "../lib/gymDates";
+import {
+  buildDefaultWeekSchedules,
+  countWeeksInSubscriptionPeriod,
+  formatWeekSchedulesLabel,
+  maxSessionsPerWeek,
+  resizeWeekSchedules,
+  weekIndexForSubscriptionDate,
+  type TrainingScheduleMode,
+  type TrainingWeekSchedule,
+} from "../lib/trainingSchedule";
 import { appendPaymentMethodsToFormData, defaultPaymentMethods, normalizePaymentMethodLines, parsePaymentMethods, paymentMethodsLabel } from "../lib/paymentMethods";
+import { evaluateProductStockAlert, lowStockProductsMessage, stockAlertMessage } from "../lib/productStock";
 import { showToast, type ToastIcon } from "../lib/toast";
 import {
   branchOptions,
   defaultBranchId,
+  defaultWalkInSaleMemberId,
   isMemberBranchLocked,
   memberBranchSelectOptions,
   categoryOptions,
@@ -172,8 +184,10 @@ const emptyTrainingSubscriptionForm = {
   discipline: "MMA",
   monthly_fee: "180",
   starts_on: todayInLima(),
+  schedule_mode: "weekly" as TrainingScheduleMode,
   selected_days: [] as string[],
   day_schedules: {} as Record<string, { start: string; end: string }>,
+  week_schedules: [] as TrainingWeekSchedule[],
   preferred_time: "19:00",
   sessions_per_week: "3",
   payment_method: "cash",
@@ -228,6 +242,7 @@ const labels: Record<string, string> = {
   monthly_fee: "Mensualidad",
   selected_days: "Días",
   day_schedules: "Horarios",
+  schedule_mode: "Configuración",
   preferred_time: "Hora",
   payment_method: "Pago",
   payment_status: "Estado pago",
@@ -355,7 +370,13 @@ function formatCell(column: string, value: unknown, row?: AnyRow) {
   if (column === "grace_days") return `${value ?? 0} días`;
   if (column === "monthly_fee") return money(value);
   if (column === "selected_days" && Array.isArray(value)) return value.join(", ");
-  if (column === "day_schedules" && value && typeof value === "object") return Object.entries(value as Record<string, { start?: string; end?: string }>).map(([day, range]) => `${day}: ${range.start ?? "--:--"}-${range.end ?? "--:--"}`).join(", ");
+  if (column === "day_schedules" && value && typeof value === "object") {
+    if (row?.schedule_mode === "monthly" && Array.isArray(row.week_schedules) && row.week_schedules.length > 0) {
+      return formatWeekSchedulesLabel(row.week_schedules as TrainingWeekSchedule[]);
+    }
+    return Object.entries(value as Record<string, { start?: string; end?: string }>).map(([day, range]) => `${day}: ${range.start ?? "--:--"}-${range.end ?? "--:--"}`).join(", ");
+  }
+  if (column === "schedule_mode") return row?.schedule_mode === "monthly" ? "Por semana del mes" : "Semanal fija";
   if (typeof value === "boolean") return value ? "Sí" : "No";
   if (["includes_classes", "includes_trainer", "is_active"].includes(column) && (value === 0 || value === 1)) return Boolean(value) ? "Sí" : "No";
   if (column === "type" || column === "payment_status") {
@@ -497,6 +518,36 @@ function subscriptionScheduleItems(subscriptions: AnyRow[]) {
   return subscriptions
     .filter((subscription) => subscription.status === "active")
     .flatMap((subscription) => {
+      const scheduleMode = subscription.schedule_mode ?? "weekly";
+      const subscriptionStartsOn = String(subscription.starts_on ?? "");
+
+      if (scheduleMode === "monthly" && Array.isArray(subscription.week_schedules) && subscription.week_schedules.length > 0) {
+        return (subscription.week_schedules as TrainingWeekSchedule[]).flatMap((week, weekIndex) => {
+          return (week.selected_days ?? []).map((day) => {
+            const range = week.day_schedules?.[day] ?? { start: subscription.preferred_time ?? "07:00", end: subscription.preferred_time ?? "08:00" };
+            return {
+              id: `${subscription.id}-w${weekIndex}-${day}`,
+              subscription_id: subscription.id,
+              member_name: subscription.member_name,
+              discipline: subscription.discipline,
+              weekday: day,
+              week_index: weekIndex,
+              subscription_starts_on: subscriptionStartsOn,
+              schedule_mode: "monthly",
+              starts_at: range.start,
+              ends_at: range.end,
+              name: `${subscription.member_name} · ${subscription.discipline}`,
+              category: subscription.discipline,
+              level: `Semana ${weekIndex + 1}`,
+              room: "Horario del socio",
+              trainer_name: "Mensual",
+              color: "#ffcc00",
+              source: subscription,
+            };
+          });
+        });
+      }
+
       const schedules = subscription.day_schedules ?? {};
       const days: string[] = subscription.selected_days ?? [];
       return days.map((day) => {
@@ -507,6 +558,7 @@ function subscriptionScheduleItems(subscriptions: AnyRow[]) {
           member_name: subscription.member_name,
           discipline: subscription.discipline,
           weekday: day,
+          schedule_mode: "weekly",
           starts_at: range.start,
           ends_at: range.end,
           name: `${subscription.member_name} · ${subscription.discipline}`,
@@ -519,6 +571,16 @@ function subscriptionScheduleItems(subscriptions: AnyRow[]) {
         };
       });
     });
+}
+
+function scheduleItemMatchesCalendarDay(item: AnyRow, day: { iso: string; weekday: string }) {
+  if (item.weekday !== day.weekday) return false;
+  if (item.schedule_mode === "monthly" && item.subscription_starts_on) {
+    const weekCount = countWeeksInSubscriptionPeriod(String(item.subscription_starts_on));
+    const weekIndex = weekIndexForSubscriptionDate(String(item.subscription_starts_on), day.iso);
+    return Number(item.week_index) === Math.min(weekIndex, weekCount - 1);
+  }
+  return true;
 }
 
 const weeklyStartHour = 7;
@@ -1341,9 +1403,15 @@ export function GymPage() {
     });
   }
 
-  function openNewProduct() {
+  async function openNewProduct() {
     setSelectedProduct(null);
-    setProductForm({ ...emptyProduct, branch_id: defaultBranchId(user, branches) });
+    const branchId = defaultBranchId(user, branches);
+    try {
+      const response = await httpClient.get("/api/gym/products/next-code");
+      setProductForm({ ...emptyProduct, code: String(response.data?.code ?? ""), branch_id: branchId });
+    } catch {
+      setProductForm({ ...emptyProduct, branch_id: branchId });
+    }
     setProductModalOpen(true);
   }
 
@@ -1371,7 +1439,7 @@ export function GymPage() {
       unit_cost: Number(productForm.unit_cost),
       unit_price: Number(productForm.unit_price),
       min_stock: productForm.min_stock === "" ? null : Number(productForm.min_stock),
-      branch_id: productForm.branch_id || null,
+      branch_id: productForm.branch_id || defaultBranchId(user, branches) || null,
       is_active: Boolean(productForm.is_active),
     };
 
@@ -1400,16 +1468,23 @@ export function GymPage() {
     });
   }
 
-  function openSellProduct(product: AnyRow) {
-    setSelectedProduct(product);
+  function openProductSale(patch: Partial<AnyRow> = {}) {
     setProductSaleForm({
       ...emptyProductSale,
+      member_id: defaultWalkInSaleMemberId(members),
+      sale_date: todayInLima(),
+      ...patch,
+    });
+    setProductSaleModalOpen(true);
+  }
+
+  function openSellProduct(product: AnyRow) {
+    setSelectedProduct(product);
+    openProductSale({
       product_id: String(product.id),
       unit_price: String(product.unit_price ?? "0"),
       quantity: "1",
-      sale_date: todayInLima(),
     });
-    setProductSaleModalOpen(true);
   }
 
   async function saveProductSale(event: FormEvent) {
@@ -1417,9 +1492,24 @@ export function GymPage() {
     setErrorModal(null);
     try {
       const formData = new FormData();
-      for (const [key, value] of Object.entries(productSaleForm)) await appendFormValue(formData, key, value);
-      await httpClient.post("/api/gym/product-sales", formData, { errorTitle: "No se pudo registrar la venta" });
+      for (const [key, value] of Object.entries(productSaleForm)) {
+        if (key === "payment_method") continue;
+        await appendFormValue(formData, key, value);
+      }
+      formData.append("payment_method", String(productSaleForm.payment_method || "cash"));
+      const response = await httpClient.post("/api/gym/product-sales", formData, { errorTitle: "No se pudo registrar la venta" });
       notify("Venta de producto registrada correctamente.");
+      const stockAlert = response.data?.stock_alert;
+      if (stockAlert) {
+        showToast(stockAlertMessage(stockAlert), "warning");
+      }
+      const otherLowStock = (response.data?.low_stock_products ?? []).filter(
+        (item: AnyRow) => !stockAlert || String(item.id) !== String(stockAlert.product_id),
+      );
+      const lowStockMessage = lowStockProductsMessage(otherLowStock);
+      if (lowStockMessage) {
+        showToast(lowStockMessage, "warning");
+      }
       setProductSaleModalOpen(false);
       setSelectedProduct(null);
       await loadAll();
@@ -1645,14 +1735,23 @@ export function GymPage() {
     const monthlyFee = String(subscription.monthly_fee ?? "");
     const paymentLines = parsePaymentMethods(subscription.payment_methods);
     setEditingTrainingSubscriptionId(subscription.id);
+    const scheduleMode = (subscription.schedule_mode ?? "weekly") as TrainingScheduleMode;
+    const endsOn = String(subscription.ends_on ?? "");
+    const startsOn = String(subscription.starts_on ?? todayInLima());
+    const weekCount = countWeeksInSubscriptionPeriod(startsOn, endsOn);
+    const weekSchedules = Array.isArray(subscription.week_schedules) && subscription.week_schedules.length > 0
+      ? (subscription.week_schedules as TrainingWeekSchedule[])
+      : buildDefaultWeekSchedules(weekCount, { selected_days: subscription.selected_days ?? [], day_schedules: subscription.day_schedules ?? {} });
     setTrainingSubscriptionForm({
       ...emptyTrainingSubscriptionForm,
       ...subscription,
       member_id: String(subscription.member_id ?? ""),
       monthly_fee: monthlyFee,
-      starts_on: String(subscription.starts_on ?? todayInLima()),
+      starts_on: startsOn,
+      schedule_mode: scheduleMode,
       selected_days: subscription.selected_days ?? [],
       day_schedules: subscription.day_schedules ?? {},
+      week_schedules: weekSchedules,
       sessions_per_week: String(subscription.sessions_per_week ?? (subscription.selected_days?.length || 1)),
       payment_methods: paymentLines.length > 0 ? paymentLines : defaultPaymentMethods(monthlyFee),
       proof_url: subscription.proof_url ?? "",
@@ -1686,12 +1785,30 @@ export function GymPage() {
     const formData = new FormData();
     try {
       normalizePaymentMethodLines(trainingSubscriptionForm.payment_methods ?? defaultPaymentMethods(String(total)), total);
+      const scheduleMode = trainingSubscriptionForm.schedule_mode ?? "weekly";
+      const weekCount = countWeeksInSubscriptionPeriod(String(trainingSubscriptionForm.starts_on ?? todayInLima()));
+      const normalizedWeekSchedules = scheduleMode === "monthly"
+        ? resizeWeekSchedules(
+            Array.isArray(trainingSubscriptionForm.week_schedules) ? (trainingSubscriptionForm.week_schedules as TrainingWeekSchedule[]) : [],
+            weekCount,
+            { selected_days: trainingSubscriptionForm.selected_days ?? [], day_schedules: trainingSubscriptionForm.day_schedules ?? {} },
+          )
+        : [];
+      if (scheduleMode === "monthly") {
+        formData.append("schedule_mode", "monthly");
+        formData.append("week_schedules", JSON.stringify(normalizedWeekSchedules));
+        formData.append("day_schedules", JSON.stringify({}));
+        formData.append("sessions_per_week", String(maxSessionsPerWeek(normalizedWeekSchedules)));
+      }
       for (const [key, value] of Object.entries(trainingSubscriptionForm)) {
         if (key === "proof_url" || key === "payment_methods" || key === "payment_method" || key === "method") continue;
+        if (scheduleMode === "monthly" && ["selected_days", "day_schedules", "week_schedules", "sessions_per_week", "schedule_mode"].includes(key)) continue;
         if (key === "selected_days" && Array.isArray(value)) {
           value.forEach((day) => formData.append("selected_days[]", day));
         } else if (key === "day_schedules") {
           formData.append("day_schedules", JSON.stringify(value ?? {}));
+        } else if (key === "week_schedules") {
+          formData.append("week_schedules", JSON.stringify(value ?? []));
         } else {
           await appendFormValue(formData, key, value);
         }
@@ -1794,7 +1911,7 @@ export function GymPage() {
           {tab === "memberships" ? <MembershipsModule rows={memberships} branches={branches} plans={plans} onNew={openNewSale} onRenew={openRenewMembership} onEdit={openEditMembership} onDelete={confirmDeleteMembership} /> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} action={(row) => <ActionButtons onDelete={() => confirmDeleteAttendance(row)} />} /></Module> : null}
           {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} /> : null}
-          {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); setProductSaleForm({ ...emptyProductSale, sale_date: todayInLima() }); setProductSaleModalOpen(true); }} /> : null}
+          {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); openProductSale(); }} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos." onNew={openNewEquipment} newLabel="Nuevo equipo"><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} action={(row) => <ActionButtons onEdit={() => openEditEquipment(row)} onDelete={() => confirmDeleteEquipment(row)} />} /></Module> : null}
           {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} onNewIncome={() => { setIncomeForm((current) => ({ ...current, branch_id: defaultBranchId(user, branches), payment_methods: defaultPaymentMethods(String(current.amount || "")) })); setIncomeModalOpen(true); }} onNewExpense={() => setExpenseModalOpen(true)} onCollectPayment={openCollectPayment} onViewMembership={openMembershipFromCash} /> : null}
           {tab === "system" && user?.is_superadmin ? <SystemAdminPanel data={saas} reload={loadAll} onNotify={notify} /> : null}
@@ -1810,7 +1927,7 @@ export function GymPage() {
       <IncomeModal open={incomeModalOpen} form={incomeForm} branches={branches} onChange={setIncomeForm} onClose={() => setIncomeModalOpen(false)} onSubmit={saveExternalIncome} />
       <CollectPaymentModal open={collectPaymentModalOpen} payment={selectedReceivable} form={collectPaymentForm} onChange={setCollectPaymentForm} onClose={() => { setCollectPaymentModalOpen(false); setSelectedReceivable(null); }} onSubmit={saveCollectPayment} />
       <StockPurchaseModal open={stockPurchaseModalOpen} product={selectedProduct} form={stockPurchaseForm} onChange={setStockPurchaseForm} onClose={() => { setStockPurchaseModalOpen(false); setSelectedProduct(null); }} onSubmit={saveStockPurchase} />
-      <ProductModal open={productModalOpen} editing={Boolean(selectedProduct)} form={productForm} branches={branches} onChange={setProductForm} onClose={() => { setProductModalOpen(false); setSelectedProduct(null); }} onSubmit={saveProduct} />
+      <ProductModal open={productModalOpen} editing={Boolean(selectedProduct)} user={user} form={productForm} branches={branches} onChange={setProductForm} onClose={() => { setProductModalOpen(false); setSelectedProduct(null); }} onSubmit={saveProduct} />
       <ProductSaleModal open={productSaleModalOpen} form={productSaleForm} products={products} members={members} onChange={setProductSaleForm} onClose={() => { setProductSaleModalOpen(false); setSelectedProduct(null); }} onSubmit={saveProductSale} />
       <ProductKardexModal open={productKardexModalOpen} rows={productMovements} onClose={() => setProductKardexModalOpen(false)} />
       <ExpenseModal open={expenseModalOpen} form={expenseForm} onChange={setExpenseForm} onClose={() => setExpenseModalOpen(false)} onSubmit={saveExpense} />
@@ -2181,7 +2298,7 @@ function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscri
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7">
             {monthDays.map((day) => {
-              const dayItems = scheduleItems.filter((item) => item.weekday === day.weekday);
+              const dayItems = scheduleItems.filter((item) => scheduleItemMatchesCalendarDay(item, day));
               return <div key={day.iso} className={`min-h-36 rounded-2xl border p-3 ${day.isToday ? "border-[#ffcc00] bg-yellow-50" : "border-zinc-200 bg-zinc-50"}`}><div className="mb-2 flex items-center justify-between"><span className="text-xs font-black uppercase text-zinc-500">{day.weekdayShort}</span><span className="text-lg font-black">{day.day}</span></div><div className="space-y-2">{dayItems.slice(0, 4).map((item) => <button key={item.id} onClick={() => onDetail(item.source)} className="block w-full rounded-xl border border-white bg-white p-2 text-left shadow-sm"><span className="block truncate text-xs font-black text-zinc-950">{String(item.starts_at).slice(0, 5)} · {item.member_name}</span><span className="block truncate text-[11px] text-zinc-500">{item.discipline} · {String(item.ends_at).slice(0, 5)}</span></button>)}</div></div>;
             })}
           </div>
@@ -2197,7 +2314,7 @@ function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscri
             <div><h3 className="text-lg font-black">Filtro de mensualidades</h3><p className="text-sm font-semibold text-zinc-500">Por defecto se muestran solo las activas.</p></div>
             <SearchableSelect value={statusFilter} onChange={setStatusFilter} options={trainingStatusFilterOptions} className={fieldClass("min-w-48")} />
           </div>
-          <DataTable title="Mensualidades de entrenamiento" rows={filteredSubscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "selected_days", "day_schedules", "payment_method", "status"]} action={(row) => <ActionButtons onDetail={() => onDetail(row)} onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
+          <DataTable title="Mensualidades de entrenamiento" rows={filteredSubscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "schedule_mode", "selected_days", "day_schedules", "payment_method", "status"]} action={(row) => <ActionButtons onDetail={() => onDetail(row)} onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
         </div>
       ) : null}
     </div>
@@ -2456,12 +2573,28 @@ function ExpenseModal({ open, form, onChange, onClose, onSubmit }: { open: boole
   );
 }
 
-function ProductModal({ open, editing, form, branches, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+function ProductModal({ open, editing, user, form, branches, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; user: AnyRow | null; form: AnyRow; branches: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  const branchSelectOptions = useMemo(() => memberBranchSelectOptions(user, branches), [user, branches]);
+  const branchLocked = isMemberBranchLocked(user, branches, editing);
+  const branchLabel = branchSelectOptions.find((item) => item.value === String(form.branch_id ?? ""))?.label ?? String(user?.branch_name ?? "");
+
+  useEffect(() => {
+    if (!open || editing) return;
+    const branchId = defaultBranchId(user, branches);
+    if (branchId && String(form.branch_id ?? "") !== branchId) {
+      onChange({ ...form, branch_id: branchId });
+    }
+  }, [open, editing, user, branches, form.branch_id]);
+
   return (
     <Modal open={open} title={editing ? "Editar producto" : "Nuevo producto"} subtitle="Administra inventario y precios por sede." onClose={onClose}>
       <form onSubmit={onSubmit} className="grid gap-3">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Código" value={form.code} onChange={(value) => onChange({ ...form, code: value })} required />
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+            <RequiredLabel>Código</RequiredLabel>
+            <input required readOnly={!editing} value={form.code ?? ""} onChange={(event) => onChange({ ...form, code: event.target.value })} className={fieldClass(editing ? "" : "bg-zinc-100 text-zinc-700")} />
+            {!editing ? <span className="text-[11px] font-semibold normal-case tracking-normal text-zinc-500">Se genera automáticamente al crear el producto.</span> : null}
+          </label>
           <Field label="Nombre" value={form.name} onChange={(value) => onChange({ ...form, name: value })} required />
           <Field label="Costo unitario" type="number" value={form.unit_cost} onChange={(value) => onChange({ ...form, unit_cost: value })} required />
           <Field label="Precio unitario" type="number" value={form.unit_price} onChange={(value) => onChange({ ...form, unit_price: value })} required />
@@ -2471,8 +2604,12 @@ function ProductModal({ open, editing, form, branches, onChange, onClose, onSubm
           <Field label="Stock mínimo" type="number" value={form.min_stock} onChange={(value) => onChange({ ...form, min_stock: value })} />
         </div>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
-          Sede
-          <SearchableSelect value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} options={branchOptions(branches)} emptyOption={{ value: "", label: "Sin sede específica" }} className={fieldClass("w-full")} />
+          <RequiredLabel required={!user?.is_superadmin || Boolean(user?.branch_id)}>Sede</RequiredLabel>
+          {branchLocked ? (
+            <input readOnly value={branchLabel} className={fieldClass("bg-zinc-100 text-zinc-700")} />
+          ) : (
+            <SearchableSelect required value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} options={branchSelectOptions} emptyOption={user?.is_superadmin && !user?.branch_id ? { value: "", label: "Sin sede específica" } : undefined} className={fieldClass("w-full")} />
+          )}
         </label>
         <label className="flex items-center gap-2 rounded-2xl bg-zinc-50 p-4 text-sm font-bold"><input type="checkbox" checked={form.is_active} onChange={(event) => onChange({ ...form, is_active: event.target.checked })} /> Activar producto</label>
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Descripción<textarea value={form.description ?? ""} onChange={(event) => onChange({ ...form, description: event.target.value })} className={fieldClass("min-h-24")} /></label>
@@ -2483,16 +2620,53 @@ function ProductModal({ open, editing, form, branches, onChange, onClose, onSubm
 }
 
 function ProductSaleModal({ open, form, products, members, onChange, onClose, onSubmit }: { open: boolean; form: AnyRow; products: AnyRow[]; members: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  const selectedProduct = products.find((item) => String(item.id) === String(form.product_id ?? ""));
+  const saleQuantity = Number(form.quantity || 0);
+  const stockAlert = evaluateProductStockAlert(selectedProduct, saleQuantity);
+  const insufficientStock = selectedProduct && saleQuantity > Number(selectedProduct.stock ?? 0);
+
   return (
     <Modal open={open} title="Vender producto" subtitle="Registra la venta de un producto y actualiza stock." onClose={onClose}>
       <form onSubmit={onSubmit} className="grid gap-3">
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           Producto
-          <SearchableSelect required value={String(form.product_id ?? "")} onChange={(value) => onChange({ ...form, product_id: value })} options={productOptions(products, money)} emptyOption={{ value: "", label: "Seleccione producto" }} className={fieldClass("w-full")} />
+          <SearchableSelect
+            required
+            value={String(form.product_id ?? "")}
+            onChange={(value) => {
+              const product = products.find((item) => String(item.id) === value);
+              onChange({
+                ...form,
+                product_id: value,
+                unit_price: product ? String(product.unit_price ?? "0") : form.unit_price,
+              });
+            }}
+            options={productOptions(products, money)}
+            emptyOption={{ value: "", label: "Seleccione producto" }}
+            className={fieldClass("w-full")}
+          />
         </label>
+        {selectedProduct ? (
+          <p className="rounded-2xl bg-zinc-50 px-3 py-2 text-xs font-semibold text-zinc-600">
+            Stock actual: <span className="font-black text-zinc-950">{Number(selectedProduct.stock ?? 0)}</span>
+            {selectedProduct.min_stock != null && selectedProduct.min_stock !== "" ? (
+              <span> · Mínimo: <span className="font-black text-zinc-950">{Number(selectedProduct.min_stock)}</span></span>
+            ) : null}
+          </p>
+        ) : null}
+        {insufficientStock ? (
+          <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-800">
+            Stock insuficiente. Disponible: {Number(selectedProduct?.stock ?? 0)}.
+          </div>
+        ) : null}
+        {stockAlert && !insufficientStock ? (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900">
+            {stockAlertMessage(stockAlert)}
+          </div>
+        ) : null}
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           Socio
-          <SearchableSelect value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value })} options={memberOptions(members, true)} emptyOption={{ value: "", label: "Consumidor final" }} className={fieldClass("w-full")} />
+          <SearchableSelect value={String(form.member_id ?? "")} onChange={(value) => onChange({ ...form, member_id: value, customer_name: value ? "" : form.customer_name })} options={memberOptions(members, true)} emptyOption={{ value: "", label: "Otro cliente (sin socio)" }} className={fieldClass("w-full")} />
         </label>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Cantidad" type="number" value={form.quantity} onChange={(value) => onChange({ ...form, quantity: value })} required />
@@ -2914,6 +3088,8 @@ function ClassDetailModal({ open, gymClass, members, rows, bookingDate, selected
 function TrainingSubscriptionDetailModal({ subscription, onClose, onEdit }: { subscription: AnyRow | null; onClose: () => void; onEdit: (subscription: AnyRow) => void }) {
   if (!subscription) return null;
   const paymentMethod = subscription.payment_method_recorded ?? subscription.payment_method;
+  const isMonthly = subscription.schedule_mode === "monthly";
+  const weekSchedules = Array.isArray(subscription.week_schedules) ? (subscription.week_schedules as TrainingWeekSchedule[]) : [];
   const schedules = subscription.day_schedules && typeof subscription.day_schedules === "object" ? Object.entries(subscription.day_schedules as Record<string, { start?: string; end?: string }>) : [];
 
   return (
@@ -2928,6 +3104,7 @@ function TrainingSubscriptionDetailModal({ subscription, onClose, onEdit }: { su
           <DetailItem label="Socio" value={subscription.member_name} />
           <DetailItem label="DNI" value={subscription.dni} />
           <DetailItem label="Disciplina" value={subscription.discipline} />
+          <DetailItem label="Configuración" value={isMonthly ? "Mensual por semana" : "Semanal fija"} />
           <DetailItem label="Vigencia" value={`${formatDateTime(subscription.starts_on)} - ${formatDateTime(subscription.ends_on)}`} />
           <DetailItem label="Días" value={Array.isArray(subscription.selected_days) ? subscription.selected_days.join(", ") : "-"} />
           <DetailItem label="Medio de pago" value={paymentMethodsLabel(paymentMethod, subscription.payment_methods, (code) => cellTranslations.payment_method[code] ?? code)} />
@@ -2936,9 +3113,25 @@ function TrainingSubscriptionDetailModal({ subscription, onClose, onEdit }: { su
         </div>
         <div className="rounded-3xl border border-zinc-200 bg-white p-4">
           <h3 className="text-sm font-black uppercase tracking-wide text-zinc-500">Horarios contratados</h3>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {schedules.length === 0 ? <p className="text-sm font-semibold text-zinc-500">Sin horarios registrados.</p> : schedules.map(([day, range]) => <div key={day} className="rounded-2xl bg-zinc-50 p-3 text-sm"><b>{day}</b><p className="font-semibold text-zinc-600">{range.start ?? "--:--"} - {range.end ?? "--:--"}</p></div>)}
-          </div>
+          {isMonthly && weekSchedules.length > 0 ? (
+            <div className="mt-3 grid gap-3">
+              {weekSchedules.map((week, index) => (
+                <div key={index} className="rounded-2xl bg-zinc-50 p-3">
+                  <p className="mb-2 text-sm font-black text-zinc-800">Semana {index + 1}</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {(week.selected_days ?? []).map((day) => {
+                      const range = week.day_schedules?.[day];
+                      return <div key={day} className="rounded-xl bg-white p-2 text-sm"><b>{day}</b><p className="font-semibold text-zinc-600">{range?.start ?? "--:--"} - {range?.end ?? "--:--"}</p></div>;
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {schedules.length === 0 ? <p className="text-sm font-semibold text-zinc-500">Sin horarios registrados.</p> : schedules.map(([day, range]) => <div key={day} className="rounded-2xl bg-zinc-50 p-3 text-sm"><b>{day}</b><p className="font-semibold text-zinc-600">{range.start ?? "--:--"} - {range.end ?? "--:--"}</p></div>)}
+            </div>
+          )}
         </div>
         <div className="rounded-3xl border border-zinc-200 bg-white p-4">
           <h3 className="text-sm font-black uppercase tracking-wide text-zinc-500">Comprobante de pago</h3>
@@ -3003,11 +3196,73 @@ function DetailItem({ label, value }: { label: string; value: ReactNode }) {
 
 function TrainingSubscriptionModal({ open, editing, form, members, onCreateMember, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; members: AnyRow[]; onCreateMember: () => void; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
   const weekdays = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
-  const selectedDays: string[] = form.selected_days ?? [];
-  const maxDays = Math.max(1, Math.min(7, Number(form.sessions_per_week || 1)));
-  const daySchedules: Record<string, { start: string; end: string }> = form.day_schedules ?? {};
+  const scheduleMode = (form.schedule_mode ?? "weekly") as TrainingScheduleMode;
+  const [activeWeekIndex, setActiveWeekIndex] = useState(0);
+  const weekCount = countWeeksInSubscriptionPeriod(String(form.starts_on ?? todayInLima()));
+  const weekSchedules: TrainingWeekSchedule[] = resizeWeekSchedules(
+    Array.isArray(form.week_schedules) ? (form.week_schedules as TrainingWeekSchedule[]) : [],
+    weekCount,
+    { selected_days: form.selected_days ?? [], day_schedules: form.day_schedules ?? {} },
+  );
+  const selectedDays: string[] = scheduleMode === "monthly" ? (weekSchedules[activeWeekIndex]?.selected_days ?? []) : (form.selected_days ?? []);
+  const maxDays = scheduleMode === "monthly" ? 7 : Math.max(1, Math.min(7, Number(form.sessions_per_week || 1)));
+  const daySchedules: Record<string, { start: string; end: string }> = scheduleMode === "monthly"
+    ? (weekSchedules[activeWeekIndex]?.day_schedules ?? {})
+    : (form.day_schedules ?? {});
+
+  function syncWeekSchedules(nextWeeks: TrainingWeekSchedule[], patch: Partial<AnyRow> = {}) {
+    onChange({
+      ...form,
+      ...patch,
+      week_schedules: nextWeeks,
+      sessions_per_week: String(maxSessionsPerWeek(nextWeeks)),
+    });
+  }
+
+  function setScheduleMode(mode: TrainingScheduleMode) {
+    if (mode === "monthly") {
+      const template = { selected_days: form.selected_days ?? [], day_schedules: form.day_schedules ?? {} };
+      const nextWeeks = buildDefaultWeekSchedules(weekCount, template);
+      syncWeekSchedules(nextWeeks, { schedule_mode: mode });
+      setActiveWeekIndex(0);
+      return;
+    }
+    const firstWeek = weekSchedules[0] ?? { selected_days: [], day_schedules: {} };
+    onChange({
+      ...form,
+      schedule_mode: mode,
+      selected_days: firstWeek.selected_days,
+      day_schedules: firstWeek.day_schedules,
+      sessions_per_week: String(Math.max(1, firstWeek.selected_days.length || Number(form.sessions_per_week || 1))),
+    });
+  }
+
+  function updateStartsOn(value: string) {
+    const nextWeekCount = countWeeksInSubscriptionPeriod(value);
+    const nextWeeks = resizeWeekSchedules(weekSchedules, nextWeekCount, weekSchedules[0]);
+    if (scheduleMode === "monthly") {
+      syncWeekSchedules(nextWeeks, { starts_on: value });
+      setActiveWeekIndex((current) => Math.min(current, nextWeekCount - 1));
+      return;
+    }
+    onChange({ ...form, starts_on: value, week_schedules: nextWeeks });
+  }
 
   function toggleDay(day: string) {
+    if (scheduleMode === "monthly") {
+      const nextWeeks = weekSchedules.map((week, index) => {
+        if (index !== activeWeekIndex) return week;
+        const weekDays = week.selected_days ?? [];
+        if (!weekDays.includes(day) && weekDays.length >= 7) return week;
+        const nextSelectedDays = weekDays.includes(day) ? weekDays.filter((item) => item !== day) : [...weekDays, day];
+        const nextSchedules = { ...week.day_schedules };
+        if (nextSelectedDays.includes(day) && !nextSchedules[day]) nextSchedules[day] = { start: form.preferred_time || "19:00", end: "20:00" };
+        if (!nextSelectedDays.includes(day)) delete nextSchedules[day];
+        return { selected_days: nextSelectedDays, day_schedules: nextSchedules };
+      });
+      syncWeekSchedules(nextWeeks);
+      return;
+    }
     if (!selectedDays.includes(day) && selectedDays.length >= maxDays) return;
     const nextSelectedDays = selectedDays.includes(day) ? selectedDays.filter((item) => item !== day) : [...selectedDays, day];
     const nextSchedules = { ...daySchedules };
@@ -3022,6 +3277,18 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
   }
 
   function updateDaySchedule(day: string, field: "start" | "end", value: string) {
+    if (scheduleMode === "monthly") {
+      const nextWeeks = weekSchedules.map((week, index) => {
+        if (index !== activeWeekIndex) return week;
+        const current = week.day_schedules[day] ?? { start: form.preferred_time || "19:00", end: "20:00" };
+        return {
+          ...week,
+          day_schedules: { ...week.day_schedules, [day]: { ...current, [field]: value } },
+        };
+      });
+      syncWeekSchedules(nextWeeks);
+      return;
+    }
     const current = daySchedules[day] ?? { start: form.preferred_time || "19:00", end: "20:00" };
     const nextSchedules = { ...daySchedules, [day]: { ...current, [field]: value } };
     onChange({ ...form, day_schedules: nextSchedules, preferred_time: nextSchedules[selectedDays[0]]?.start ?? value });
@@ -3040,23 +3307,58 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Disciplina</RequiredLabel><SearchableSelect required value={form.discipline} onChange={(value) => onChange({ ...form, discipline: value })} options={stringOptions(classDisciplines)} className={fieldClass()} /></label>
           <Field label="Mensualidad" type="number" value={form.monthly_fee} onChange={(value) => onChange({ ...form, monthly_fee: value })} required />
-          <Field label="Inicio" type="date" value={form.starts_on} onChange={(value) => onChange({ ...form, starts_on: value })} required />
-          <Field label="Sesiones por semana" type="number" value={form.sessions_per_week} onChange={(value) => {
-            const limit = Math.max(1, Math.min(7, Number(value || 1)));
-            const trimmedDays = selectedDays.slice(0, limit);
-            const trimmedSchedules = Object.fromEntries(Object.entries(daySchedules).filter(([day]) => trimmedDays.includes(day)));
-            onChange({ ...form, sessions_per_week: value, selected_days: trimmedDays, day_schedules: trimmedSchedules });
-          }} required />
+          <Field label="Inicio" type="date" value={form.starts_on} onChange={updateStartsOn} required />
+          {scheduleMode === "weekly" ? (
+            <Field label="Sesiones por semana" type="number" value={form.sessions_per_week} onChange={(value) => {
+              const limit = Math.max(1, Math.min(7, Number(value || 1)));
+              const trimmedDays = (form.selected_days ?? []).slice(0, limit);
+              const trimmedSchedules = Object.fromEntries(Object.entries(form.day_schedules ?? {}).filter(([day]) => trimmedDays.includes(day)));
+              onChange({ ...form, sessions_per_week: value, selected_days: trimmedDays, day_schedules: trimmedSchedules });
+            }} required />
+          ) : (
+            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm font-semibold text-zinc-700">
+              <p className="text-[11px] font-black uppercase tracking-wide text-zinc-500">Sesiones por semana</p>
+              <p className="mt-1 font-black text-zinc-950">Hasta {maxSessionsPerWeek(weekSchedules)} según la semana con más días</p>
+            </div>
+          )}
         </div>
         <div>
+          <p className="mb-2 text-xs font-black uppercase tracking-wide text-zinc-500">Tipo de configuración <span className="text-red-600">*</span></p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button type="button" onClick={() => setScheduleMode("weekly")} className={`rounded-2xl border px-4 py-3 text-left ${scheduleMode === "weekly" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
+              <p className="text-sm font-black">Semanal fija</p>
+              <p className="mt-1 text-xs font-semibold opacity-80">Los mismos días y horarios todas las semanas del mes.</p>
+            </button>
+            <button type="button" onClick={() => setScheduleMode("monthly")} className={`rounded-2xl border px-4 py-3 text-left ${scheduleMode === "monthly" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
+              <p className="text-sm font-black">Mensual por semana</p>
+              <p className="mt-1 text-xs font-semibold opacity-80">Elige días y horarios distintos en cada semana del período ({weekCount} semanas).</p>
+            </button>
+          </div>
+        </div>
+        {scheduleMode === "monthly" ? (
+          <div className="flex flex-wrap gap-2">
+            {weekSchedules.map((week, index) => (
+              <button key={index} type="button" onClick={() => setActiveWeekIndex(index)} className={`rounded-xl px-3 py-2 text-xs font-black ${activeWeekIndex === index ? "bg-zinc-950 text-white" : "bg-zinc-100 text-zinc-600"}`}>
+                Semana {index + 1} · {(week.selected_days ?? []).length} día(s)
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div>
           <div className="mb-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs font-black uppercase tracking-wide text-zinc-500">Días de entrenamiento <span className="text-red-600">*</span></p>
-            <span className={`text-xs font-black ${selectedDays.length === maxDays ? "text-emerald-700" : "text-zinc-500"}`}>{selectedDays.length}/{maxDays} días seleccionados</span>
+            <p className="text-xs font-black uppercase tracking-wide text-zinc-500">
+              {scheduleMode === "monthly" ? `Días de la semana ${activeWeekIndex + 1}` : "Días de entrenamiento"} <span className="text-red-600">*</span>
+            </p>
+            {scheduleMode === "weekly" ? (
+              <span className={`text-xs font-black ${selectedDays.length === maxDays ? "text-emerald-700" : "text-zinc-500"}`}>{selectedDays.length}/{maxDays} días seleccionados</span>
+            ) : (
+              <span className="text-xs font-black text-zinc-500">{selectedDays.length} día(s) en esta semana</span>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {weekdays.map((day) => {
               const isSelected = selectedDays.includes(day);
-              const isDisabled = !isSelected && selectedDays.length >= maxDays;
+              const isDisabled = scheduleMode === "weekly" && !isSelected && selectedDays.length >= maxDays;
               return <button key={day} type="button" disabled={isDisabled} onClick={() => toggleDay(day)} className={`rounded-2xl border px-3 py-2 text-sm font-black ${isSelected ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : isDisabled ? "cursor-not-allowed border-zinc-100 bg-zinc-50 text-zinc-300" : "border-zinc-200 bg-white text-zinc-600"}`}>{day}</button>;
             })}
           </div>
@@ -3077,6 +3379,7 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
             </div>
           ) : null}
         </div>
+        <input type="hidden" name="schedule_mode" value={scheduleMode} />
         <PaymentMethodsFields lines={form.payment_methods ?? defaultPaymentMethods(String(form.monthly_fee || ""))} totalAmount={form.monthly_fee} file={form.proof_photo} existingProofUrl={form.proof_url} onChange={(lines) => onChange({ ...form, payment_methods: lines })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
         <FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Registrar mensualidad"} />

@@ -53,6 +53,8 @@ export function parseApiError(error: unknown, title = "No se pudo completar la o
     payment_method: "Medio de pago",
     proof_photo: "Foto del comprobante",
     sessions_per_week: "Sesiones por semana",
+    schedule_mode: "Tipo de configuración",
+    week_schedules: "Horarios por semana",
   };
 
   const details = Object.entries(data.errors ?? {}).flatMap(([field, messages]) => {
