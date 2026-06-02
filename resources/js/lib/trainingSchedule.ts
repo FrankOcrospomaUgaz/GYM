@@ -1,6 +1,20 @@
 export type TrainingDaySchedule = { start: string; end: string };
 export type TrainingWeekSchedule = { selected_days: string[]; day_schedules: Record<string, TrainingDaySchedule> };
-export type TrainingScheduleMode = "weekly" | "monthly";
+export type TrainingScheduleMode = "weekly" | "monthly" | "package";
+export type TrainingBillingMode = "monthly" | "per_class" | "total";
+
+export function computePackageTotal(
+  billingMode: TrainingBillingMode,
+  sessionCount: number,
+  pricePerClass: string | number,
+  totalAmount: string | number,
+): number {
+  const count = Math.max(1, sessionCount);
+  if (billingMode === "per_class") {
+    return Math.round(Number(pricePerClass || 0) * count * 100) / 100;
+  }
+  return Math.round(Number(totalAmount || 0) * 100) / 100;
+}
 
 export function emptyWeekSchedule(): TrainingWeekSchedule {
   return { selected_days: [], day_schedules: {} };

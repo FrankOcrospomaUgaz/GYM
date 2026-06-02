@@ -7,11 +7,13 @@ import { PaymentMethodsFields } from "../components/PaymentMethodsFields";
 import { currentMonthRangeInLima, dateKeyInLima, formatGymDateTime, todayInLima } from "../lib/gymDates";
 import {
   buildDefaultWeekSchedules,
+  computePackageTotal,
   countWeeksInSubscriptionPeriod,
   formatWeekSchedulesLabel,
   maxSessionsPerWeek,
   resizeWeekSchedules,
   weekIndexForSubscriptionDate,
+  type TrainingBillingMode,
   type TrainingScheduleMode,
   type TrainingWeekSchedule,
 } from "../lib/trainingSchedule";
@@ -179,18 +181,29 @@ const emptyClassForm = {
   is_active: true,
 };
 
+function defaultPackageEndsOn(startsOn: string): string {
+  const start = new Date(`${startsOn || todayInLima()}T12:00:00-05:00`);
+  start.setDate(start.getDate() + 29);
+  return dateKeyInLima(start);
+}
+
 const emptyTrainingSubscriptionForm = {
   member_id: "",
   discipline: "MMA",
   monthly_fee: "180",
   starts_on: todayInLima(),
+  ends_on: defaultPackageEndsOn(todayInLima()),
   schedule_mode: "weekly" as TrainingScheduleMode,
+  billing_mode: "per_class" as TrainingBillingMode,
+  price_per_class: "60",
   selected_days: [] as string[],
   day_schedules: {} as Record<string, { start: string; end: string }>,
   week_schedules: [] as TrainingWeekSchedule[],
   preferred_time: "19:00",
   sessions_per_week: "3",
   payment_method: "cash",
+  payment_status: "paid",
+  due_on: "",
   payment_methods: defaultPaymentMethods("180"),
   proof_photo: null,
   notes: "",
@@ -376,7 +389,14 @@ function formatCell(column: string, value: unknown, row?: AnyRow) {
     }
     return Object.entries(value as Record<string, { start?: string; end?: string }>).map(([day, range]) => `${day}: ${range.start ?? "--:--"}-${range.end ?? "--:--"}`).join(", ");
   }
-  if (column === "schedule_mode") return row?.schedule_mode === "monthly" ? "Por semana del mes" : "Semanal fija";
+  if (column === "schedule_mode") {
+    if (row?.schedule_mode === "package") return "Paquete de clases";
+    return row?.schedule_mode === "monthly" ? "Por semana del mes" : "Semanal fija";
+  }
+  if (column === "billing_mode") {
+    if (row?.schedule_mode !== "package") return "Mensual";
+    return row?.billing_mode === "per_class" ? "Por clase" : "Monto total";
+  }
   if (typeof value === "boolean") return value ? "Sí" : "No";
   if (["includes_classes", "includes_trainer", "is_active"].includes(column) && (value === 0 || value === 1)) return Boolean(value) ? "Sí" : "No";
   if (column === "type" || column === "payment_status") {
@@ -514,7 +534,7 @@ function buildMonthDays(baseDate: Date) {
   return days;
 }
 
-function subscriptionScheduleItems(subscriptions: AnyRow[]) {
+function subscriptionScheduleItems(subscriptions: AnyRow[]): AnyRow[] {
   return subscriptions
     .filter((subscription) => subscription.status === "active")
     .flatMap((subscription) => {
@@ -550,6 +570,7 @@ function subscriptionScheduleItems(subscriptions: AnyRow[]) {
 
       const schedules = subscription.day_schedules ?? {};
       const days: string[] = subscription.selected_days ?? [];
+      const isPackage = scheduleMode === "package";
       return days.map((day) => {
         const range = schedules[day] ?? { start: subscription.preferred_time ?? "07:00", end: subscription.preferred_time ?? "08:00" };
         return {
@@ -558,14 +579,17 @@ function subscriptionScheduleItems(subscriptions: AnyRow[]) {
           member_name: subscription.member_name,
           discipline: subscription.discipline,
           weekday: day,
-          schedule_mode: "weekly",
+          week_index: 0,
+          subscription_starts_on: subscriptionStartsOn,
+          subscription_ends_on: String(subscription.ends_on ?? ""),
+          schedule_mode: isPackage ? "package" : "weekly",
           starts_at: range.start,
           ends_at: range.end,
           name: `${subscription.member_name} · ${subscription.discipline}`,
           category: subscription.discipline,
-          level: "Mensualidad",
+          level: isPackage ? "Paquete" : "Mensualidad",
           room: "Horario del socio",
-          trainer_name: "Mensual",
+          trainer_name: isPackage ? "Paquete" : "Mensual",
           color: "#ffcc00",
           source: subscription,
         };
@@ -575,6 +599,9 @@ function subscriptionScheduleItems(subscriptions: AnyRow[]) {
 
 function scheduleItemMatchesCalendarDay(item: AnyRow, day: { iso: string; weekday: string }) {
   if (item.weekday !== day.weekday) return false;
+  if (item.schedule_mode === "package" && item.subscription_starts_on && item.subscription_ends_on) {
+    return day.iso >= String(item.subscription_starts_on) && day.iso <= String(item.subscription_ends_on);
+  }
   if (item.schedule_mode === "monthly" && item.subscription_starts_on) {
     const weekCount = countWeeksInSubscriptionPeriod(String(item.subscription_starts_on));
     const weekIndex = weekIndexForSubscriptionDate(String(item.subscription_starts_on), day.iso);
@@ -1742,17 +1769,23 @@ export function GymPage() {
     const weekSchedules = Array.isArray(subscription.week_schedules) && subscription.week_schedules.length > 0
       ? (subscription.week_schedules as TrainingWeekSchedule[])
       : buildDefaultWeekSchedules(weekCount, { selected_days: subscription.selected_days ?? [], day_schedules: subscription.day_schedules ?? {} });
+    const billingMode = (subscription.billing_mode ?? "monthly") as TrainingBillingMode;
     setTrainingSubscriptionForm({
       ...emptyTrainingSubscriptionForm,
       ...subscription,
       member_id: String(subscription.member_id ?? ""),
       monthly_fee: monthlyFee,
       starts_on: startsOn,
+      ends_on: String(subscription.ends_on ?? defaultPackageEndsOn(startsOn)),
       schedule_mode: scheduleMode,
+      billing_mode: scheduleMode === "package" ? (billingMode === "monthly" ? "total" : billingMode) : "monthly",
+      price_per_class: String(subscription.price_per_class ?? ""),
       selected_days: subscription.selected_days ?? [],
       day_schedules: subscription.day_schedules ?? {},
       week_schedules: weekSchedules,
       sessions_per_week: String(subscription.sessions_per_week ?? (subscription.selected_days?.length || 1)),
+      payment_status: String(subscription.payment_status ?? "paid"),
+      due_on: String(subscription.payment_due_on ?? subscription.due_on ?? ""),
       payment_methods: paymentLines.length > 0 ? paymentLines : defaultPaymentMethods(monthlyFee),
       proof_url: subscription.proof_url ?? "",
       proof_photo: null,
@@ -1781,11 +1814,23 @@ export function GymPage() {
     if (trainingSubscriptionSaving) return;
     setErrorModal(null);
     setTrainingSubscriptionSaving(true);
-    const total = Number(trainingSubscriptionForm.monthly_fee || 0);
+    const scheduleMode = trainingSubscriptionForm.schedule_mode ?? "weekly";
+    const billingMode = (trainingSubscriptionForm.billing_mode ?? "monthly") as TrainingBillingMode;
+    const sessionCount = Math.max(1, (trainingSubscriptionForm.selected_days ?? []).length);
+    const total = scheduleMode === "package"
+      ? computePackageTotal(
+          billingMode === "monthly" ? "total" : billingMode,
+          sessionCount,
+          trainingSubscriptionForm.price_per_class,
+          trainingSubscriptionForm.monthly_fee,
+        )
+      : Number(trainingSubscriptionForm.monthly_fee || 0);
+    const paymentStatus = String(trainingSubscriptionForm.payment_status ?? "paid");
     const formData = new FormData();
     try {
-      normalizePaymentMethodLines(trainingSubscriptionForm.payment_methods ?? defaultPaymentMethods(String(total)), total);
-      const scheduleMode = trainingSubscriptionForm.schedule_mode ?? "weekly";
+      if (paymentStatus === "paid") {
+        normalizePaymentMethodLines(trainingSubscriptionForm.payment_methods ?? defaultPaymentMethods(String(total)), total);
+      }
       const weekCount = countWeeksInSubscriptionPeriod(String(trainingSubscriptionForm.starts_on ?? todayInLima()));
       const normalizedWeekSchedules = scheduleMode === "monthly"
         ? resizeWeekSchedules(
@@ -1800,9 +1845,25 @@ export function GymPage() {
         formData.append("day_schedules", JSON.stringify({}));
         formData.append("sessions_per_week", String(maxSessionsPerWeek(normalizedWeekSchedules)));
       }
+      if (scheduleMode === "package") {
+        formData.append("schedule_mode", "package");
+        formData.append("billing_mode", billingMode === "monthly" ? "total" : billingMode);
+        formData.append("ends_on", String(trainingSubscriptionForm.ends_on ?? defaultPackageEndsOn(String(trainingSubscriptionForm.starts_on ?? todayInLima()))));
+        formData.append("sessions_per_week", String(sessionCount));
+        if (billingMode === "per_class") {
+          formData.append("price_per_class", String(trainingSubscriptionForm.price_per_class ?? ""));
+        }
+      }
+      formData.append("monthly_fee", String(total));
+      formData.append("payment_status", paymentStatus);
+      if (paymentStatus === "credit" && trainingSubscriptionForm.due_on) {
+        formData.append("due_on", String(trainingSubscriptionForm.due_on));
+      }
       for (const [key, value] of Object.entries(trainingSubscriptionForm)) {
         if (key === "proof_url" || key === "payment_methods" || key === "payment_method" || key === "method") continue;
+        if (["monthly_fee", "payment_status", "due_on"].includes(key)) continue;
         if (scheduleMode === "monthly" && ["selected_days", "day_schedules", "week_schedules", "sessions_per_week", "schedule_mode"].includes(key)) continue;
+        if (scheduleMode === "package" && ["week_schedules", "sessions_per_week", "schedule_mode", "billing_mode", "ends_on", "price_per_class"].includes(key)) continue;
         if (key === "selected_days" && Array.isArray(value)) {
           value.forEach((day) => formData.append("selected_days[]", day));
         } else if (key === "day_schedules") {
@@ -1813,7 +1874,9 @@ export function GymPage() {
           await appendFormValue(formData, key, value);
         }
       }
-      appendPaymentMethodsToFormData(formData, trainingSubscriptionForm.payment_methods ?? defaultPaymentMethods(String(total)), total);
+      if (paymentStatus === "paid") {
+        appendPaymentMethodsToFormData(formData, trainingSubscriptionForm.payment_methods ?? defaultPaymentMethods(String(total)), total);
+      }
       if (editingTrainingSubscriptionId) {
         formData.append("_method", "PUT");
         await httpClient.post(`/api/gym/training-subscriptions/${editingTrainingSubscriptionId}`, formData);
@@ -2314,7 +2377,7 @@ function ClassesModule({ subscriptions, viewMode, onViewModeChange, onNewSubscri
             <div><h3 className="text-lg font-black">Filtro de mensualidades</h3><p className="text-sm font-semibold text-zinc-500">Por defecto se muestran solo las activas.</p></div>
             <SearchableSelect value={statusFilter} onChange={setStatusFilter} options={trainingStatusFilterOptions} className={fieldClass("min-w-48")} />
           </div>
-          <DataTable title="Mensualidades de entrenamiento" rows={filteredSubscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "schedule_mode", "selected_days", "day_schedules", "payment_method", "status"]} action={(row) => <ActionButtons onDetail={() => onDetail(row)} onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
+          <DataTable title="Mensualidades de entrenamiento" rows={filteredSubscriptions} columns={["member_name", "discipline", "monthly_fee", "starts_on", "ends_on", "schedule_mode", "billing_mode", "selected_days", "payment_status", "status"]} action={(row) => <ActionButtons onDetail={() => onDetail(row)} onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
         </div>
       ) : null}
     </div>
@@ -3088,28 +3151,34 @@ function ClassDetailModal({ open, gymClass, members, rows, bookingDate, selected
 function TrainingSubscriptionDetailModal({ subscription, onClose, onEdit }: { subscription: AnyRow | null; onClose: () => void; onEdit: (subscription: AnyRow) => void }) {
   if (!subscription) return null;
   const paymentMethod = subscription.payment_method_recorded ?? subscription.payment_method;
-  const isMonthly = subscription.schedule_mode === "monthly";
+  const scheduleMode = subscription.schedule_mode ?? "weekly";
+  const isMonthly = scheduleMode === "monthly";
+  const isPackage = scheduleMode === "package";
   const weekSchedules = Array.isArray(subscription.week_schedules) ? (subscription.week_schedules as TrainingWeekSchedule[]) : [];
   const schedules = subscription.day_schedules && typeof subscription.day_schedules === "object" ? Object.entries(subscription.day_schedules as Record<string, { start?: string; end?: string }>) : [];
+  const paymentStatus = String(subscription.payment_status ?? "paid");
 
   return (
     <Modal open title="Detalle de mensualidad" subtitle={`${subscription.member_name ?? "Socio"} · ${subscription.discipline ?? "Disciplina"}`} onClose={onClose}>
       <div className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-3">
-          <MetricCard title="Mensualidad" value={money(subscription.monthly_fee)} yellow />
-          <MetricCard title="Sesiones/semana" value={subscription.sessions_per_week ?? 0} />
+          <MetricCard title={isPackage ? "Monto del paquete" : "Mensualidad"} value={money(subscription.monthly_fee)} yellow />
+          <MetricCard title={isPackage ? "Clases" : "Sesiones/semana"} value={isPackage ? (subscription.selected_days?.length ?? subscription.sessions_per_week ?? 0) : (subscription.sessions_per_week ?? 0)} />
           <MetricCard title="Estado" value={<StatusBadge value={String(subscription.status ?? "active")} />} />
         </div>
         <div className="grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-2">
           <DetailItem label="Socio" value={subscription.member_name} />
           <DetailItem label="DNI" value={subscription.dni} />
           <DetailItem label="Disciplina" value={subscription.discipline} />
-          <DetailItem label="Configuración" value={isMonthly ? "Mensual por semana" : "Semanal fija"} />
+          <DetailItem label="Configuración" value={isPackage ? "Paquete de clases" : isMonthly ? "Mensual por semana" : "Semanal fija"} />
+          {isPackage ? <DetailItem label="Cobro" value={subscription.billing_mode === "per_class" ? `S/ ${subscription.price_per_class ?? 0} por clase` : "Monto total"} /> : null}
           <DetailItem label="Vigencia" value={`${formatDateTime(subscription.starts_on)} - ${formatDateTime(subscription.ends_on)}`} />
           <DetailItem label="Días" value={Array.isArray(subscription.selected_days) ? subscription.selected_days.join(", ") : "-"} />
           <DetailItem label="Medio de pago" value={paymentMethodsLabel(paymentMethod, subscription.payment_methods, (code) => cellTranslations.payment_method[code] ?? code)} />
           <DetailItem label="Comprobante" value={subscription.payment_receipt_number ?? "Generado al registrar la mensualidad"} />
-          <DetailItem label="Estado del pago" value={<StatusBadge value={String(subscription.payment_status ?? "paid")} />} />
+          <DetailItem label="Estado del pago" value={<StatusBadge value={paymentStatus} />} />
+          {paymentStatus === "credit" ? <DetailItem label="Vence el" value={formatDateTime(subscription.payment_due_on ?? subscription.due_on)} /> : null}
+          {["credit", "partial"].includes(paymentStatus) ? <DetailItem label="Saldo pendiente" value={money(Math.max(0, Number(subscription.payment_amount ?? subscription.monthly_fee ?? 0) - Number(subscription.payment_amount_paid ?? 0)))} /> : null}
         </div>
         <div className="rounded-3xl border border-zinc-200 bg-white p-4">
           <h3 className="text-sm font-black uppercase tracking-wide text-zinc-500">Horarios contratados</h3>
@@ -3197,6 +3266,8 @@ function DetailItem({ label, value }: { label: string; value: ReactNode }) {
 function TrainingSubscriptionModal({ open, editing, form, members, onCreateMember, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; members: AnyRow[]; onCreateMember: () => void; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
   const weekdays = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
   const scheduleMode = (form.schedule_mode ?? "weekly") as TrainingScheduleMode;
+  const billingMode = (form.billing_mode ?? "per_class") as TrainingBillingMode;
+  const paymentStatus = String(form.payment_status ?? "paid");
   const [activeWeekIndex, setActiveWeekIndex] = useState(0);
   const weekCount = countWeeksInSubscriptionPeriod(String(form.starts_on ?? todayInLima()));
   const weekSchedules: TrainingWeekSchedule[] = resizeWeekSchedules(
@@ -3205,10 +3276,34 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
     { selected_days: form.selected_days ?? [], day_schedules: form.day_schedules ?? {} },
   );
   const selectedDays: string[] = scheduleMode === "monthly" ? (weekSchedules[activeWeekIndex]?.selected_days ?? []) : (form.selected_days ?? []);
-  const maxDays = scheduleMode === "monthly" ? 7 : Math.max(1, Math.min(7, Number(form.sessions_per_week || 1)));
+  const maxDays = scheduleMode === "package" ? 7 : scheduleMode === "monthly" ? 7 : Math.max(1, Math.min(7, Number(form.sessions_per_week || 1)));
   const daySchedules: Record<string, { start: string; end: string }> = scheduleMode === "monthly"
     ? (weekSchedules[activeWeekIndex]?.day_schedules ?? {})
     : (form.day_schedules ?? {});
+  const packageSessionCount = Math.max(1, selectedDays.length);
+  const packageTotal = computePackageTotal(
+    billingMode === "monthly" ? "total" : billingMode,
+    packageSessionCount,
+    form.price_per_class,
+    form.monthly_fee,
+  );
+
+  function syncPackagePricing(patch: Partial<AnyRow> = {}, nextDays: string[] = selectedDays) {
+    const nextBilling = (patch.billing_mode ?? billingMode) as TrainingBillingMode;
+    const count = Math.max(1, nextDays.length);
+    const total = computePackageTotal(
+      nextBilling === "monthly" ? "total" : nextBilling,
+      count,
+      patch.price_per_class ?? form.price_per_class,
+      patch.monthly_fee ?? form.monthly_fee,
+    );
+    onChange({
+      ...form,
+      ...patch,
+      monthly_fee: String(total),
+      payment_methods: defaultPaymentMethods(String(total)),
+    });
+  }
 
   function syncWeekSchedules(nextWeeks: TrainingWeekSchedule[], patch: Partial<AnyRow> = {}) {
     onChange({
@@ -3220,10 +3315,20 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
   }
 
   function setScheduleMode(mode: TrainingScheduleMode) {
+    if (mode === "package") {
+      const startsOn = String(form.starts_on ?? todayInLima());
+      syncPackagePricing({
+        schedule_mode: mode,
+        billing_mode: "per_class",
+        ends_on: form.ends_on || defaultPackageEndsOn(startsOn),
+        sessions_per_week: String(Math.max(1, (form.selected_days ?? []).length || 1)),
+      });
+      return;
+    }
     if (mode === "monthly") {
       const template = { selected_days: form.selected_days ?? [], day_schedules: form.day_schedules ?? {} };
       const nextWeeks = buildDefaultWeekSchedules(weekCount, template);
-      syncWeekSchedules(nextWeeks, { schedule_mode: mode });
+      syncWeekSchedules(nextWeeks, { schedule_mode: mode, billing_mode: "monthly" });
       setActiveWeekIndex(0);
       return;
     }
@@ -3231,6 +3336,7 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
     onChange({
       ...form,
       schedule_mode: mode,
+      billing_mode: "monthly",
       selected_days: firstWeek.selected_days,
       day_schedules: firstWeek.day_schedules,
       sessions_per_week: String(Math.max(1, firstWeek.selected_days.length || Number(form.sessions_per_week || 1))),
@@ -3249,6 +3355,19 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
   }
 
   function toggleDay(day: string) {
+    if (scheduleMode === "package") {
+      const nextSelectedDays = selectedDays.includes(day) ? selectedDays.filter((item) => item !== day) : [...selectedDays, day];
+      const nextSchedules = { ...daySchedules };
+      if (nextSelectedDays.includes(day) && !nextSchedules[day]) nextSchedules[day] = { start: form.preferred_time || "19:00", end: "20:00" };
+      if (!nextSelectedDays.includes(day)) delete nextSchedules[day];
+      syncPackagePricing({
+        selected_days: nextSelectedDays,
+        day_schedules: nextSchedules,
+        preferred_time: nextSchedules[nextSelectedDays[0]]?.start ?? form.preferred_time,
+        sessions_per_week: String(Math.max(1, nextSelectedDays.length)),
+      }, nextSelectedDays);
+      return;
+    }
     if (scheduleMode === "monthly") {
       const nextWeeks = weekSchedules.map((week, index) => {
         if (index !== activeWeekIndex) return week;
@@ -3277,6 +3396,12 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
   }
 
   function updateDaySchedule(day: string, field: "start" | "end", value: string) {
+    if (scheduleMode === "package") {
+      const current = daySchedules[day] ?? { start: form.preferred_time || "19:00", end: "20:00" };
+      const nextSchedules = { ...daySchedules, [day]: { ...current, [field]: value } };
+      onChange({ ...form, day_schedules: nextSchedules, preferred_time: nextSchedules[selectedDays[0]]?.start ?? value });
+      return;
+    }
     if (scheduleMode === "monthly") {
       const nextWeeks = weekSchedules.map((week, index) => {
         if (index !== activeWeekIndex) return week;
@@ -3295,7 +3420,7 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
   }
 
   return (
-    <Modal open={open} title={editing ? "Editar mensualidad" : "Mensualidad de clases"} subtitle="El socio paga mensual y define qué días y a qué hora entrena." onClose={onClose}>
+    <Modal open={open} title={editing ? "Editar mensualidad" : "Mensualidad de clases"} subtitle={scheduleMode === "package" ? "Registra 1 o más clases con días, horarios y precio a tu medida." : "El socio paga mensual y define qué días y a qué hora entrena."} onClose={onClose}>
       <form onSubmit={onSubmit} className="space-y-4">
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           <div className="flex items-center justify-between gap-3">
@@ -3306,8 +3431,17 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
         </label>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Disciplina</RequiredLabel><SearchableSelect required value={form.discipline} onChange={(value) => onChange({ ...form, discipline: value })} options={stringOptions(classDisciplines)} className={fieldClass()} /></label>
-          <Field label="Mensualidad" type="number" value={form.monthly_fee} onChange={(value) => onChange({ ...form, monthly_fee: value })} required />
+          {scheduleMode !== "package" ? (
+            <Field label="Mensualidad" type="number" value={form.monthly_fee} onChange={(value) => onChange({ ...form, monthly_fee: value, payment_methods: defaultPaymentMethods(value) })} required />
+          ) : (
+            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm font-semibold text-zinc-700">
+              <p className="text-[11px] font-black uppercase tracking-wide text-zinc-500">Total a cobrar</p>
+              <p className="mt-1 text-2xl font-black text-zinc-950">{money(packageTotal)}</p>
+              <p className="mt-1 text-xs text-zinc-500">{packageSessionCount} clase(s){billingMode === "per_class" ? ` × ${money(form.price_per_class)}` : ""}</p>
+            </div>
+          )}
           <Field label="Inicio" type="date" value={form.starts_on} onChange={updateStartsOn} required />
+          {scheduleMode === "package" ? <Field label="Vigencia hasta" type="date" value={form.ends_on ?? ""} onChange={(value) => onChange({ ...form, ends_on: value })} required /> : null}
           {scheduleMode === "weekly" ? (
             <Field label="Sesiones por semana" type="number" value={form.sessions_per_week} onChange={(value) => {
               const limit = Math.max(1, Math.min(7, Number(value || 1)));
@@ -3324,17 +3458,43 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
         </div>
         <div>
           <p className="mb-2 text-xs font-black uppercase tracking-wide text-zinc-500">Tipo de configuración <span className="text-red-600">*</span></p>
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-2 sm:grid-cols-3">
             <button type="button" onClick={() => setScheduleMode("weekly")} className={`rounded-2xl border px-4 py-3 text-left ${scheduleMode === "weekly" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
               <p className="text-sm font-black">Semanal fija</p>
               <p className="mt-1 text-xs font-semibold opacity-80">Los mismos días y horarios todas las semanas del mes.</p>
             </button>
             <button type="button" onClick={() => setScheduleMode("monthly")} className={`rounded-2xl border px-4 py-3 text-left ${scheduleMode === "monthly" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
               <p className="text-sm font-black">Mensual por semana</p>
-              <p className="mt-1 text-xs font-semibold opacity-80">Elige días y horarios distintos en cada semana del período ({weekCount} semanas).</p>
+              <p className="mt-1 text-xs font-semibold opacity-80">Días y horarios distintos por semana ({weekCount} semanas).</p>
+            </button>
+            <button type="button" onClick={() => setScheduleMode("package")} className={`rounded-2xl border px-4 py-3 text-left ${scheduleMode === "package" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
+              <p className="text-sm font-black">Paquete de clases</p>
+              <p className="mt-1 text-xs font-semibold opacity-80">1, 2 o más clases con días libres y precio por clase o total.</p>
             </button>
           </div>
         </div>
+        {scheduleMode === "package" ? (
+          <div>
+            <p className="mb-2 text-xs font-black uppercase tracking-wide text-zinc-500">Forma de cobro <span className="text-red-600">*</span></p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button type="button" onClick={() => syncPackagePricing({ billing_mode: "per_class" })} className={`rounded-2xl border px-4 py-3 text-left ${billingMode === "per_class" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
+                <p className="text-sm font-black">Precio por clase</p>
+                <p className="mt-1 text-xs font-semibold opacity-80">El total se calcula según las clases elegidas.</p>
+              </button>
+              <button type="button" onClick={() => syncPackagePricing({ billing_mode: "total" })} className={`rounded-2xl border px-4 py-3 text-left ${billingMode === "total" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
+                <p className="text-sm font-black">Monto total</p>
+                <p className="mt-1 text-xs font-semibold opacity-80">Defines un precio fijo por el paquete completo.</p>
+              </button>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {billingMode === "per_class" ? (
+                <Field label="Precio por clase" type="number" value={form.price_per_class} onChange={(value) => syncPackagePricing({ price_per_class: value })} required />
+              ) : (
+                <Field label="Monto total del paquete" type="number" value={form.monthly_fee} onChange={(value) => syncPackagePricing({ monthly_fee: value, billing_mode: "total" })} required />
+              )}
+            </div>
+          </div>
+        ) : null}
         {scheduleMode === "monthly" ? (
           <div className="flex flex-wrap gap-2">
             {weekSchedules.map((week, index) => (
@@ -3347,10 +3507,12 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
         <div>
           <div className="mb-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-xs font-black uppercase tracking-wide text-zinc-500">
-              {scheduleMode === "monthly" ? `Días de la semana ${activeWeekIndex + 1}` : "Días de entrenamiento"} <span className="text-red-600">*</span>
+              {scheduleMode === "monthly" ? `Días de la semana ${activeWeekIndex + 1}` : scheduleMode === "package" ? "Clases del paquete" : "Días de entrenamiento"} <span className="text-red-600">*</span>
             </p>
             {scheduleMode === "weekly" ? (
               <span className={`text-xs font-black ${selectedDays.length === maxDays ? "text-emerald-700" : "text-zinc-500"}`}>{selectedDays.length}/{maxDays} días seleccionados</span>
+            ) : scheduleMode === "package" ? (
+              <span className="text-xs font-black text-zinc-500">{selectedDays.length} clase(s) · Total {money(packageTotal)}</span>
             ) : (
               <span className="text-xs font-black text-zinc-500">{selectedDays.length} día(s) en esta semana</span>
             )}
@@ -3380,9 +3542,15 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
           ) : null}
         </div>
         <input type="hidden" name="schedule_mode" value={scheduleMode} />
-        <PaymentMethodsFields lines={form.payment_methods ?? defaultPaymentMethods(String(form.monthly_fee || ""))} totalAmount={form.monthly_fee} file={form.proof_photo} existingProofUrl={form.proof_url} onChange={(lines) => onChange({ ...form, payment_methods: lines })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Estado del pago<SearchableSelect value={paymentStatus} onChange={(value) => onChange({ ...form, payment_status: value })} options={[{ value: "paid", label: "Pagado" }, { value: "credit", label: "Crédito (cuenta por cobrar)" }]} className={fieldClass("w-full")} /></label>
+        {paymentStatus === "credit" ? <Field label="Vence el" type="date" value={form.due_on ?? ""} onChange={(value) => onChange({ ...form, due_on: value })} required /> : null}
+        {paymentStatus === "paid" ? (
+          <PaymentMethodsFields lines={form.payment_methods ?? defaultPaymentMethods(String(scheduleMode === "package" ? packageTotal : form.monthly_fee || ""))} totalAmount={scheduleMode === "package" ? packageTotal : form.monthly_fee} file={form.proof_photo} existingProofUrl={form.proof_url} onChange={(lines) => onChange({ ...form, payment_methods: lines })} onFileChange={(file) => onChange({ ...form, proof_photo: file })} />
+        ) : (
+          <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">El monto quedará en <span className="font-black">cuentas por cobrar</span> hasta la fecha de vencimiento. Podrás cobrarlo desde Caja.</p>
+        )}
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">Notas<textarea value={form.notes ?? ""} onChange={(event) => onChange({ ...form, notes: event.target.value })} className={fieldClass("min-h-24")} /></label>
-        <FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : "Registrar mensualidad"} />
+        <FormActions onClose={onClose} submitLabel={editing ? "Guardar cambios" : scheduleMode === "package" ? "Registrar paquete" : "Registrar mensualidad"} />
       </form>
     </Modal>
   );

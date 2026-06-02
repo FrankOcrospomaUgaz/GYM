@@ -1742,6 +1742,12 @@ class GymController extends Controller
             'gym_payments.paid_on as payment_paid_on',
             'gym_payments.proof_path as payment_proof_path',
         ];
+        if ($this->tableHasColumn('gym_payments', 'amount_paid')) {
+            $select[] = 'gym_payments.amount_paid as payment_amount_paid';
+        }
+        if ($this->tableHasColumn('gym_payments', 'due_on')) {
+            $select[] = 'gym_payments.due_on as payment_due_on';
+        }
         if ($this->tableHasColumn('gym_payments', 'payment_methods')) {
             $select[] = 'gym_payments.payment_methods as payment_methods';
         }
@@ -1784,35 +1790,22 @@ class GymController extends Controller
         $tenantId = $this->defaultTenantId($request);
         [$scheduleMode, $weekSchedules] = $this->trainingScheduleMetaFromValidation($request);
         $this->abortIfDuplicateTrainingSubscription($tenantId, (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules, null, $scheduleMode, $weekSchedules);
-        $paymentMethods = $this->parsePaymentMethodsInput($request, (float) $data['monthly_fee'], 'payment_method');
-        $data['payment_method'] = $this->primaryPaymentMethodFromSplits($paymentMethods);
-        $proofPath = $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
-            ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public')
-            : null;
-        if ($this->paymentMethodsRequireProof($paymentMethods)) {
-            abort_unless($request->hasFile('proof_photo'), 422, 'Adjunte el comprobante de pago para medios distintos a efectivo.');
-        }
+        [$paymentStatus, $paymentMethods, $proofPath, $amountPaid] = $this->resolveTrainingSubscriptionPaymentInput($request, $data, $starts);
 
-        return DB::transaction(function () use ($request, $data, $tenantId, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath, $paymentMethods, $scheduleMode, $weekSchedules): JsonResponse {
+        return DB::transaction(function () use ($request, $data, $tenantId, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath, $paymentMethods, $scheduleMode, $weekSchedules, $paymentStatus, $amountPaid): JsonResponse {
             $id = DB::table('gym_training_subscriptions')->insertGetId($this->trainingSubscriptionPayload($request, $data, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath, $scheduleMode, $weekSchedules, 'active'));
 
-            $paymentRow = [
-                'tenant_id' => $tenantId,
-                'branch_id' => $this->branchIdForWrite($request, $this->memberBranchId((int) $data['member_id'])),
-                'member_id' => $data['member_id'],
-                'training_subscription_id' => $id,
-                'receipt_number' => $this->nextPaymentReceiptNumber(),
-                'amount' => $data['monthly_fee'],
-                'amount_paid' => $data['monthly_fee'],
-                'proof_path' => $proofPath,
-                'status' => 'paid',
-                'paid_on' => now()->toDateString(),
-                'notes' => 'Pago de mensualidad de clases',
-                'registered_by' => $request->user()?->id,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ];
-            $this->applyPaymentMethodsToPaymentRow($paymentRow, $paymentMethods);
+            $paymentRow = $this->trainingSubscriptionPaymentRow(
+                $request,
+                $data,
+                $id,
+                (float) $data['monthly_fee'],
+                $paymentStatus,
+                $amountPaid,
+                $proofPath,
+                $paymentMethods,
+                $starts,
+            );
             $paymentId = DB::table('gym_payments')->insertGetId($paymentRow);
 
             return response()->json(['subscription_id' => $id, 'payment_id' => $paymentId], 201);
@@ -1829,16 +1822,11 @@ class GymController extends Controller
         $current = $this->scopeTenant(DB::table('gym_training_subscriptions')->where('id', $subscription), $request, 'gym_training_subscriptions')->first();
         abort_unless($current !== null, 404, 'Mensualidad no encontrada.');
 
-        $paymentMethods = $this->parsePaymentMethodsInput($request, (float) $data['monthly_fee'], 'payment_method');
-        $data['payment_method'] = $this->primaryPaymentMethodFromSplits($paymentMethods);
-        $proofPath = $this->paymentMethodsRequireProof($paymentMethods)
-            ? ($request->hasFile('proof_photo') ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public') : $current->proof_path)
-            : null;
-        if ($this->paymentMethodsRequireProof($paymentMethods) && ! $request->hasFile('proof_photo') && ! $current->proof_path) {
-            abort(422, 'Adjunte el comprobante de pago para medios distintos a efectivo.');
-        }
+        [$paymentStatus, $paymentMethods, $proofPath, $amountPaid] = $this->resolveTrainingSubscriptionPaymentInput($request, $data, $starts, $current->proof_path ?? null);
+        $subscriptionStatus = (string) ($data['status'] ?? 'active');
+        $resolvedPaymentStatus = $subscriptionStatus === 'cancelled' ? 'annulled' : $paymentStatus;
 
-        $payload = $this->trainingSubscriptionPayload($request, $data, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath, $scheduleMode, $weekSchedules, (string) ($data['status'] ?? 'active'));
+        $payload = $this->trainingSubscriptionPayload($request, $data, $starts, $selectedDays, $daySchedules, $preferredTime, $proofPath, $scheduleMode, $weekSchedules, $subscriptionStatus);
         unset($payload['tenant_id'], $payload['registered_by'], $payload['created_at']);
         $payload['updated_at'] = now();
 
@@ -1849,22 +1837,32 @@ class GymController extends Controller
             'member_id' => $data['member_id'],
             'training_subscription_id' => $subscription,
             'amount' => $data['monthly_fee'],
-            'amount_paid' => $data['monthly_fee'],
+            'amount_paid' => $resolvedPaymentStatus === 'annulled' ? 0 : $amountPaid,
             'proof_path' => $proofPath,
-            'status' => ($data['status'] ?? 'active') === 'cancelled' ? 'annulled' : 'paid',
+            'status' => $resolvedPaymentStatus,
             'notes' => 'Pago de mensualidad de clases',
             'registered_by' => $request->user()?->id,
             'updated_at' => now(),
         ];
-        $this->applyPaymentMethodsToPaymentRow($paymentPayload, $paymentMethods);
+        if ($this->tableHasColumn('gym_payments', 'due_on')) {
+            $paymentPayload['due_on'] = $resolvedPaymentStatus === 'credit'
+                ? ($data['due_on'] ?? $starts->copy()->addDays(7)->toDateString())
+                : null;
+        }
+        if ($resolvedPaymentStatus === 'paid') {
+            $this->applyPaymentMethodsToPaymentRow($paymentPayload, $paymentMethods);
+        } elseif ($resolvedPaymentStatus === 'credit') {
+            $paymentPayload['method'] = 'credit';
+        }
 
         $payment = DB::table('gym_payments')->where('training_subscription_id', $subscription)->first();
         if ($payment) {
             DB::table('gym_payments')->where('id', $payment->id)->update($paymentPayload);
         } else {
             DB::table('gym_payments')->insert(array_merge($paymentPayload, [
+                'branch_id' => $this->branchIdForWrite($request, $this->memberBranchId((int) $data['member_id'])),
                 'receipt_number' => $this->nextPaymentReceiptNumber(),
-                'paid_on' => now()->toDateString(),
+                'paid_on' => $starts->toDateString(),
                 'created_at' => now(),
             ]));
         }
@@ -1895,7 +1893,7 @@ class GymController extends Controller
         }
 
         $scheduleMode = (string) $request->input('schedule_mode', 'weekly');
-        if (! in_array($scheduleMode, ['weekly', 'monthly'], true)) {
+        if (! in_array($scheduleMode, ['weekly', 'monthly', 'package'], true)) {
             abort(response()->json(['message' => 'Modo de configuración inválido.'], 422));
         }
 
@@ -1904,15 +1902,25 @@ class GymController extends Controller
             'discipline' => ['required', 'string', 'max:120'],
             'monthly_fee' => ['required', 'numeric', 'min:0.01'],
             'starts_on' => ['required', 'date'],
-            'schedule_mode' => ['nullable', Rule::in(['weekly', 'monthly'])],
+            'schedule_mode' => ['nullable', Rule::in(['weekly', 'monthly', 'package'])],
             'payment_method' => ['nullable', Rule::in(['cash', 'card', 'transfer', 'yape', 'plin', 'mixed'])],
             'payment_methods' => ['nullable'],
+            'payment_status' => ['nullable', Rule::in(['paid', 'credit'])],
+            'due_on' => ['nullable', 'date'],
             'proof_photo' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:8192'],
             'status' => ['nullable', Rule::in(['active', 'inactive', 'cancelled', 'expired'])],
             'notes' => ['nullable', 'string'],
         ];
 
-        if ($scheduleMode === 'monthly') {
+        if ($scheduleMode === 'package') {
+            $rules['ends_on'] = ['required', 'date', 'after_or_equal:starts_on'];
+            $rules['billing_mode'] = ['required', Rule::in(['per_class', 'total'])];
+            $rules['price_per_class'] = ['nullable', 'numeric', 'min:0'];
+            $rules['selected_days'] = ['required', 'array', 'min:1', 'max:7'];
+            $rules['selected_days.*'] = ['required', Rule::in(['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'])];
+            $rules['day_schedules'] = ['required', 'json'];
+            $rules['sessions_per_week'] = ['nullable', 'integer', 'min:1', 'max:7'];
+        } elseif ($scheduleMode === 'monthly') {
             $rules['week_schedules'] = ['required', 'json'];
             $rules['selected_days'] = ['nullable', 'array'];
             $rules['day_schedules'] = ['nullable', 'json'];
@@ -1926,8 +1934,43 @@ class GymController extends Controller
 
         $data = $request->validate($rules);
         $data['schedule_mode'] = $scheduleMode;
+        $data['payment_status'] = (string) ($data['payment_status'] ?? 'paid');
+        $data['due_on'] = filled($data['due_on'] ?? null) ? Carbon::parse($data['due_on'])->toDateString() : null;
         $starts = Carbon::parse($data['starts_on']);
         $weekdayLabels = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+
+        if ($scheduleMode === 'package') {
+            $selectedDays = array_values(array_unique($data['selected_days'] ?? []));
+            $daySchedules = (array) json_decode((string) $data['day_schedules'], true);
+            foreach ($selectedDays as $day) {
+                $daySchedules[$day] = $this->validatedTrainingDaySchedule((array) ($daySchedules[$day] ?? []), $day);
+            }
+            $billingMode = (string) $data['billing_mode'];
+            $sessionCount = count($selectedDays);
+            if ($billingMode === 'per_class') {
+                $pricePerClass = round((float) ($data['price_per_class'] ?? 0), 2);
+                abort_unless($pricePerClass > 0, 422, 'Indique el precio por clase.');
+                $data['price_per_class'] = $pricePerClass;
+                $data['monthly_fee'] = round($pricePerClass * $sessionCount, 2);
+            } else {
+                $data['price_per_class'] = null;
+                $data['monthly_fee'] = round((float) $data['monthly_fee'], 2);
+                abort_unless((float) $data['monthly_fee'] > 0, 422, 'Indique el monto total del paquete.');
+            }
+            $data['billing_mode'] = $billingMode;
+            $data['sessions_per_week'] = $sessionCount;
+            $request->attributes->set('training_week_schedules', []);
+            if ($data['payment_status'] === 'credit') {
+                abort_unless(filled($data['due_on']), 422, 'Indique la fecha de vencimiento para cobros a crédito.');
+                abort_unless(Carbon::parse($data['due_on'])->greaterThanOrEqualTo($starts), 422, 'La fecha de vencimiento no puede ser anterior al inicio.');
+            }
+            $preferredTime = (string) (($daySchedules[$selectedDays[0]]['start'] ?? '07:00'));
+
+            return [$data, $starts, $selectedDays, $daySchedules, $preferredTime];
+        }
+
+        $data['billing_mode'] = 'monthly';
+        $data['price_per_class'] = null;
 
         if ($scheduleMode === 'monthly') {
             $weekSchedules = (array) json_decode((string) $request->input('week_schedules', '[]'), true);
@@ -1998,15 +2041,79 @@ class GymController extends Controller
         return [$scheduleMode, is_array($weekSchedules) ? $weekSchedules : []];
     }
 
+    private function resolveTrainingSubscriptionPaymentInput(Request $request, array &$data, Carbon $starts, ?string $existingProofPath = null): array
+    {
+        $paymentStatus = (string) ($data['payment_status'] ?? 'paid');
+        abort_unless(in_array($paymentStatus, ['paid', 'credit'], true), 422, 'Estado de pago inválido.');
+        $amount = (float) $data['monthly_fee'];
+
+        if ($paymentStatus === 'credit') {
+            abort_unless(filled($data['due_on'] ?? null), 422, 'Indique la fecha de vencimiento para cobros a crédito.');
+            abort_unless(Carbon::parse($data['due_on'])->greaterThanOrEqualTo($starts), 422, 'La fecha de vencimiento no puede ser anterior al inicio.');
+            $data['payment_method'] = 'credit';
+
+            return [$paymentStatus, [], null, 0.0];
+        }
+
+        $paymentMethods = $this->parsePaymentMethodsInput($request, $amount, 'payment_method');
+        $data['payment_method'] = $this->primaryPaymentMethodFromSplits($paymentMethods);
+        $proofPath = $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
+            ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public')
+            : ($this->paymentMethodsRequireProof($paymentMethods) ? $existingProofPath : null);
+        if ($this->paymentMethodsRequireProof($paymentMethods) && ! $request->hasFile('proof_photo') && ! $existingProofPath) {
+            abort(422, 'Adjunte el comprobante de pago para medios distintos a efectivo.');
+        }
+
+        return [$paymentStatus, $paymentMethods, $proofPath, $amount];
+    }
+
+    private function trainingSubscriptionPaymentRow(Request $request, array $data, int $subscriptionId, float $amount, string $paymentStatus, float $amountPaid, ?string $proofPath, array $paymentMethods, Carbon $starts): array
+    {
+        $row = [
+            'tenant_id' => $this->defaultTenantId($request),
+            'branch_id' => $this->branchIdForWrite($request, $this->memberBranchId((int) $data['member_id'])),
+            'member_id' => $data['member_id'],
+            'training_subscription_id' => $subscriptionId,
+            'receipt_number' => $this->nextPaymentReceiptNumber(),
+            'amount' => $amount,
+            'amount_paid' => $amountPaid,
+            'proof_path' => $proofPath,
+            'status' => $paymentStatus,
+            'paid_on' => $starts->toDateString(),
+            'notes' => ($data['schedule_mode'] ?? 'weekly') === 'package'
+                ? 'Pago de paquete de clases'
+                : 'Pago de mensualidad de clases',
+            'registered_by' => $request->user()?->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+        if ($this->tableHasColumn('gym_payments', 'due_on')) {
+            $row['due_on'] = $paymentStatus === 'credit'
+                ? ($data['due_on'] ?? $starts->copy()->addDays(7)->toDateString())
+                : null;
+        }
+        if ($paymentStatus === 'paid') {
+            $this->applyPaymentMethodsToPaymentRow($row, $paymentMethods);
+        } else {
+            $row['method'] = 'credit';
+        }
+
+        return $row;
+    }
+
     private function trainingSubscriptionPayload(Request $request, array $data, Carbon $starts, array $selectedDays, array $daySchedules, string $preferredTime, ?string $proofPath, string $scheduleMode, array $weekSchedules, string $status): array
     {
+        $endsOn = $scheduleMode === 'package' && filled($data['ends_on'] ?? null)
+            ? Carbon::parse($data['ends_on'])->toDateString()
+            : $starts->copy()->addMonthNoOverflow()->subDay()->toDateString();
+
         $payload = [
             'tenant_id' => $this->defaultTenantId($request),
             'member_id' => $data['member_id'],
             'discipline' => $data['discipline'],
             'monthly_fee' => $data['monthly_fee'],
             'starts_on' => $starts->toDateString(),
-            'ends_on' => $starts->copy()->addMonthNoOverflow()->subDay()->toDateString(),
+            'ends_on' => $endsOn,
             'selected_days' => json_encode($selectedDays),
             'day_schedules' => json_encode(collect($daySchedules)->only($selectedDays)->all()),
             'preferred_time' => $preferredTime,
@@ -2025,6 +2132,15 @@ class GymController extends Controller
         }
         if ($this->tableHasColumn('gym_training_subscriptions', 'week_schedules')) {
             $payload['week_schedules'] = $scheduleMode === 'monthly' ? json_encode($weekSchedules, JSON_UNESCAPED_UNICODE) : null;
+        }
+        if ($this->tableHasColumn('gym_training_subscriptions', 'billing_mode')) {
+            $payload['billing_mode'] = $data['billing_mode'] ?? ($scheduleMode === 'package' ? 'total' : 'monthly');
+        }
+        if ($this->tableHasColumn('gym_training_subscriptions', 'price_per_class')) {
+            $payload['price_per_class'] = $data['price_per_class'] ?? null;
+        }
+        if (! empty($data['payment_method'])) {
+            $payload['payment_method'] = $data['payment_method'];
         }
 
         return $payload;
@@ -2053,6 +2169,11 @@ class GymController extends Controller
         $normalizedWeeks = json_encode($weekSchedules, JSON_UNESCAPED_UNICODE);
         $duplicate = $query->get()->contains(function ($row) use ($normalizedDays, $normalizedSchedules, $scheduleMode, $normalizedWeeks): bool {
             $rowMode = (string) ($row->schedule_mode ?? 'weekly');
+            if ($scheduleMode === 'package' || $rowMode === 'package') {
+                return $rowMode === $scheduleMode
+                    && (string) $row->selected_days === $normalizedDays
+                    && (string) ($row->day_schedules ?? '') === $normalizedSchedules;
+            }
             if ($scheduleMode === 'monthly' || $rowMode === 'monthly') {
                 return $rowMode === $scheduleMode
                     && (string) ($row->week_schedules ?? '') === $normalizedWeeks;
