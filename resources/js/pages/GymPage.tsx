@@ -293,7 +293,7 @@ function cardClass() {
 }
 
 function fieldClass(extra = "") {
-  return `min-h-11 rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm outline-[#ffcc00] transition focus:border-[#ffcc00] focus:ring-4 focus:ring-[#ffcc00]/20 ${extra}`;
+  return `min-h-11 w-full rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm outline-[#ffcc00] transition focus:border-[#ffcc00] focus:ring-4 focus:ring-[#ffcc00]/20 ${extra}`;
 }
 
 const cellTranslations: Record<string, Record<string, string>> = {
@@ -2474,7 +2474,7 @@ function DataTable({ title, rows, columns, action, bare }: { title?: string; row
 
 function Modal({ open, title, subtitle, children, onClose, stacked }: { open: boolean; title: string; subtitle?: string; children: ReactNode; onClose: () => void; stacked?: boolean }) {
   if (!open) return null;
-  return <div className={`fixed inset-0 ${stacked ? "z-[60]" : "z-50"} grid place-items-end bg-zinc-950/60 p-0 backdrop-blur-sm sm:place-items-center sm:p-4`}><div className="max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-3xl"><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black">{title}</h2>{subtitle ? <p className="mt-1 text-sm text-zinc-500">{subtitle}</p> : null}</div><button onClick={onClose} className="rounded-2xl bg-zinc-100 p-2 text-zinc-600"><X className="h-5 w-5" /></button></div>{children}</div></div>;
+  return <div className={`fixed inset-0 ${stacked ? "z-[60]" : "z-50"} grid place-items-center bg-zinc-950/60 p-2 backdrop-blur-sm sm:p-4`}><div className="max-h-[94vh] w-full overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl sm:max-w-2xl"><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="text-2xl font-black">{title}</h2>{subtitle ? <p className="mt-1 text-sm text-zinc-500">{subtitle}</p> : null}</div><button onClick={onClose} className="rounded-2xl bg-zinc-100 p-2 text-zinc-600"><X className="h-5 w-5" /></button></div>{children}</div></div>;
 }
 
 function MemberModal({ open, editing, user, form, branches, fitnessGoals, onCreateGoal, onChange, onSearchDni, onClose, onSubmit, stacked }: { open: boolean; editing: boolean; user: AnyRow | null; form: AnyRow; branches: AnyRow[]; fitnessGoals: AnyRow[]; onCreateGoal: (name: string) => Promise<void>; onChange: (form: AnyRow) => void; onSearchDni: (dni: string) => Promise<void>; onClose: () => void; onSubmit: (event: FormEvent) => void; stacked?: boolean }) {
