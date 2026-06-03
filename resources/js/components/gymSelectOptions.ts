@@ -147,6 +147,19 @@ export function isMemberBranchLocked(user: AnyRow | null | undefined, branches: 
   return branches.length === 1;
 }
 
+/** Sede fija para el usuario logueado (no superadmin sin sede). */
+export function isBranchFieldLocked(user: AnyRow | null | undefined, branches: AnyRow[]): boolean {
+  if (user?.is_superadmin && !user?.branch_id) return false;
+  if (user?.branch_id) return true;
+  return branches.length === 1;
+}
+
+export function branchLabelForId(branchId: string, branches: AnyRow[], fallback = ""): string {
+  if (!branchId) return fallback;
+  const match = branches.find((branch) => String(branch.id) === String(branchId));
+  return String(match?.name ?? fallback);
+}
+
 export function tenantOptions(tenants: AnyRow[]): SearchableSelectOption[] {
   return tenants.map((tenant) => ({
     value: String(tenant.id),

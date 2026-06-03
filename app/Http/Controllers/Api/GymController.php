@@ -2312,7 +2312,7 @@ class GymController extends Controller
             'name' => ['required', 'string', 'max:120'],
             'email' => ['nullable', 'email', 'max:120'],
             'password' => ['nullable', 'string', 'min:8'],
-            'branch_id' => ['required', 'exists:gym_branches,id'],
+            'branch_id' => ['nullable', 'exists:gym_branches,id'],
             'phone' => ['nullable', 'string', 'max:40'],
             'specialty' => ['nullable', 'string', 'max:120'],
             'availability' => ['nullable', 'string', 'max:120'],
@@ -2320,13 +2320,8 @@ class GymController extends Controller
             'is_active' => ['nullable', 'boolean'],
         ]);
 
-        abort_unless(
-            DB::table('gym_branches')->where('id', $data['branch_id'])->where('tenant_id', $tenantId)->exists(),
-            422,
-            'La sede no pertenece al cliente activo.',
-        );
-
-        $branchId = (int) $data['branch_id'];
+        $branchId = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
+        abort_unless($branchId !== null, 422, 'No se pudo determinar la sede del registro.');
         $trainerRoleId = $this->trainerRoleId();
         $assignTrainerRole = (bool) ($data['assign_trainer_role'] ?? false);
 
@@ -2394,7 +2389,7 @@ class GymController extends Controller
             'name' => ['required', 'string', 'max:120'],
             'email' => ['required', 'email', 'max:120', Rule::unique('users', 'email')->ignore($trainer)],
             'password' => ['nullable', 'string', 'min:8'],
-            'branch_id' => ['required', 'exists:gym_branches,id'],
+            'branch_id' => ['nullable', 'exists:gym_branches,id'],
             'phone' => ['nullable', 'string', 'max:40'],
             'specialty' => ['nullable', 'string', 'max:120'],
             'availability' => ['nullable', 'string', 'max:120'],
@@ -2402,18 +2397,15 @@ class GymController extends Controller
             'is_active' => ['required', 'boolean'],
         ]);
 
-        abort_unless(
-            DB::table('gym_branches')->where('id', $data['branch_id'])->where('tenant_id', $tenantId)->exists(),
-            422,
-            'La sede no pertenece al cliente activo.',
-        );
+        $branchId = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
+        abort_unless($branchId !== null, 422, 'No se pudo determinar la sede del registro.');
 
         $trainerRoleId = $this->trainerRoleId();
         $assignTrainerRole = (bool) ($data['assign_trainer_role'] ?? false);
         $update = [
             'name' => trim((string) $data['name']),
             'email' => strtolower(trim((string) $data['email'])),
-            'branch_id' => (int) $data['branch_id'],
+            'branch_id' => $branchId,
             'phone' => $data['phone'] ?? null,
             'specialty' => $data['specialty'] ?? null,
             'availability' => $data['availability'] ?? null,
@@ -2428,7 +2420,7 @@ class GymController extends Controller
         }
         $user->update($update);
         DB::table('gym_branch_user')->where('user_id', $trainer)->delete();
-        DB::table('gym_branch_user')->insert(['user_id' => $trainer, 'branch_id' => (int) $data['branch_id']]);
+        DB::table('gym_branch_user')->insert(['user_id' => $trainer, 'branch_id' => $branchId]);
 
         return response()->json($this->trainerPayload($user->fresh()));
     }

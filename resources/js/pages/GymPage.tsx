@@ -25,6 +25,8 @@ import {
   defaultBranchId,
   defaultWalkInSaleMemberId,
   isMemberBranchLocked,
+  isBranchFieldLocked,
+  branchLabelForId,
   memberBranchSelectOptions,
   categoryOptions,
   equipmentStatusOptions,
@@ -882,7 +884,7 @@ export function GymPage() {
   const [classForm, setClassForm] = useState<AnyRow>(emptyClassForm);
   const [classModalOpen, setClassModalOpen] = useState(false);
   const [trainers, setTrainers] = useState<AnyRow[]>([]);
-  const [trainerBranchFilter, setTrainerBranchFilter] = useState("");
+  const [trainerBranchFilter, setTrainerBranchFilter] = useState(() => "");
   const [trainerForm, setTrainerForm] = useState<AnyRow>(emptyTrainerForm);
   const [trainerModalOpen, setTrainerModalOpen] = useState(false);
   const [editingTrainerId, setEditingTrainerId] = useState<number | null>(null);
@@ -1062,8 +1064,15 @@ export function GymPage() {
   }
 
   useEffect(() => {
+    const branchId = defaultBranchId(user, branches);
+    if (branchId && isBranchFieldLocked(user, branches)) {
+      setTrainerBranchFilter(branchId);
+    }
+  }, [user?.branch_id, user?.branch_name, user?.is_superadmin, branches]);
+
+  useEffect(() => {
     void loadAll();
-  }, [membersPage, membersPerPage, memberStatusFilter, memberBranchFilter, memberSearch, productBranchFilter]);
+  }, [membersPage, membersPerPage, memberStatusFilter, memberBranchFilter, memberSearch, productBranchFilter, trainerBranchFilter]);
 
   useEffect(() => {
     if (tab === "memberships") {
@@ -1735,6 +1744,7 @@ export function GymPage() {
     event.preventDefault();
     const payload = {
       ...trainerForm,
+      branch_id: trainerForm.branch_id || defaultBranchId(user, branches),
       assign_trainer_role: Boolean(trainerForm.assign_trainer_role),
       is_active: Boolean(trainerForm.is_active),
     };
@@ -1784,7 +1794,7 @@ export function GymPage() {
       name: gymClass.name ?? "",
       category: gymClass.category ?? "MMA",
       level: gymClass.level ?? "Todos",
-      branch_id: gymClass.branch_id ? String(gymClass.branch_id) : "",
+      branch_id: gymClass.branch_id ? String(gymClass.branch_id) : (defaultBranchId(user, branches) || ""),
       room: gymClass.room ?? "",
       trainer_id: gymClass.trainer_id ? String(gymClass.trainer_id) : "",
       weekday: gymClass.weekday ?? "Lunes",
@@ -1802,7 +1812,7 @@ export function GymPage() {
     event.preventDefault();
     const payload = {
       ...classForm,
-      branch_id: classForm.branch_id || null,
+      branch_id: classForm.branch_id || defaultBranchId(user, branches) || null,
       trainer_id: classForm.trainer_id || null,
       capacity: Number(classForm.capacity),
       is_active: Boolean(classForm.is_active),
@@ -2086,7 +2096,7 @@ export function GymPage() {
           {tab === "memberships" ? <MembershipsModule rows={memberships} branches={branches} plans={plans} onNew={openNewSale} onRenew={openRenewMembership} onEdit={openEditMembership} onDelete={confirmDeleteMembership} /> : null}
           {tab === "attendance" ? <Module title="Accesos" subtitle="Historial de ingreso y validación de membresías."><DataTable title="Control de accesos" rows={attendance} columns={["member_name", "checked_in_at", "checked_out_at", "notes"]} action={(row) => <ActionButtons onDelete={() => confirmDeleteAttendance(row)} />} /></Module> : null}
           {tab === "classes" ? <ClassesModule subscriptions={trainingSubscriptions} gymClasses={classes} viewMode={classesViewMode} onViewModeChange={setClassesViewMode} onNewSubscription={openTrainingSubscription} onEdit={openEditTrainingSubscription} onDetail={openTrainingSubscriptionDetail} onDelete={confirmDeleteTrainingSubscription} onNewClass={openNewClass} onEditClass={openEditClass} onDeleteClass={confirmDeleteClass} onOpenClassDetail={openClassDetail} /> : null}
-          {tab === "trainers" ? <TrainersModule trainers={trainers} branches={branches} branchFilter={trainerBranchFilter} onBranchFilterChange={(value) => { setTrainerBranchFilter(value); void httpClient.get("/api/gym/trainers", { ...silentRequest, params: { branch_id: value || undefined } }).then((response) => setTrainers(response.data ?? [])).catch(() => notify("No se pudieron cargar los profesores.", "warning")); }} onNew={openNewTrainer} onEdit={openEditTrainer} onDelete={confirmDeleteTrainer} /> : null}
+          {tab === "trainers" ? <TrainersModule user={user} trainers={trainers} branches={branches} branchFilter={trainerBranchFilter} onBranchFilterChange={setTrainerBranchFilter} onNew={openNewTrainer} onEdit={openEditTrainer} onDelete={confirmDeleteTrainer} /> : null}
           {tab === "products" ? <ProductsModule products={products} productSales={productSales} branches={branches} branchFilter={productBranchFilter} onBranchFilterChange={setProductBranchFilter} onNewProduct={openNewProduct} onSellProduct={openSellProduct} onStockPurchase={openStockPurchase} onKardex={openProductKardex} onEditProduct={openEditProduct} onDeleteProduct={confirmDeleteProduct} onNewSale={() => { setSelectedProduct(null); openProductSale(); }} /> : null}
           {tab === "equipment" ? <Module title="Equipos" subtitle="Activos, estado operativo y próximos mantenimientos." onNew={openNewEquipment} newLabel="Nuevo equipo"><DataTable title="Equipos y mantenimiento" rows={equipment} columns={["code", "name", "status", "next_maintenance_on", "notes"]} action={(row) => <ActionButtons onEdit={() => openEditEquipment(row)} onDelete={() => confirmDeleteEquipment(row)} />} /></Module> : null}
           {tab === "finance" ? <FinanceModule movements={cashMovements} payments={payments} expenses={expenses} onNewIncome={() => { setIncomeForm((current) => ({ ...current, branch_id: defaultBranchId(user, branches), payment_methods: defaultPaymentMethods(String(current.amount || "")) })); setIncomeModalOpen(true); }} onNewExpense={() => setExpenseModalOpen(true)} onCollectPayment={openCollectPayment} onViewMembership={openMembershipFromCash} /> : null}
@@ -2108,8 +2118,8 @@ export function GymPage() {
       <ProductKardexModal open={productKardexModalOpen} rows={productMovements} onClose={() => setProductKardexModalOpen(false)} />
       <ExpenseModal open={expenseModalOpen} form={expenseForm} onChange={setExpenseForm} onClose={() => setExpenseModalOpen(false)} onSubmit={saveExpense} />
       <EquipmentModal open={equipmentModalOpen} editing={Boolean(editingEquipmentId)} form={equipmentForm} branches={branches} onChange={setEquipmentForm} onClose={() => { setEquipmentModalOpen(false); setEditingEquipmentId(null); }} onSubmit={saveEquipment} />
-      <ClassModal open={classModalOpen} editing={Boolean(editingClassId)} form={classForm} branches={branches} trainers={trainers} onChange={setClassForm} onClose={() => setClassModalOpen(false)} onSubmit={saveClass} />
-      <TrainerModal open={trainerModalOpen} editing={Boolean(editingTrainerId)} form={trainerForm} branches={branches} tenantStaff={tenantStaff} onChange={setTrainerForm} onClose={() => { setTrainerModalOpen(false); setEditingTrainerId(null); }} onSubmit={saveTrainer} onLoadStaff={() => void loadTenantStaff(true)} />
+      <ClassModal open={classModalOpen} editing={Boolean(editingClassId)} user={user} form={classForm} branches={branches} trainers={trainers} onChange={setClassForm} onClose={() => setClassModalOpen(false)} onSubmit={saveClass} />
+      <TrainerModal open={trainerModalOpen} editing={Boolean(editingTrainerId)} user={user} form={trainerForm} branches={branches} tenantStaff={tenantStaff} onChange={setTrainerForm} onClose={() => { setTrainerModalOpen(false); setEditingTrainerId(null); }} onSubmit={saveTrainer} onLoadStaff={() => void loadTenantStaff(true)} />
       <ClassDetailModal open={classDetailOpen} gymClass={selectedClass} members={members} rows={classBookings} bookingDate={classBookingDate} selectedMemberId={classBookingMemberId} onDateChange={(date) => { setClassBookingDate(date); void reloadClassBookings(date); }} onMemberChange={setClassBookingMemberId} onReserve={reserveClass} onCheckIn={checkInClassBooking} onCancel={cancelClassBooking} onClose={() => setClassDetailOpen(false)} />
       <TrainingSubscriptionModal open={trainingSubscriptionModalOpen} editing={Boolean(editingTrainingSubscriptionId)} form={trainingSubscriptionForm} members={members} onCreateMember={openTrainingMemberModal} onChange={setTrainingSubscriptionForm} onClose={() => { setEditingTrainingSubscriptionId(null); setTrainingSubscriptionModalOpen(false); }} onSubmit={saveTrainingSubscription} />
       <TrainingSubscriptionDetailModal subscription={trainingSubscriptionDetail} onClose={() => setTrainingSubscriptionDetail(null)} onEdit={(subscription) => { setTrainingSubscriptionDetail(null); openEditTrainingSubscription(subscription); }} />
@@ -2518,17 +2528,54 @@ function ClassesModule({ subscriptions, gymClasses, viewMode, onViewModeChange, 
   );
 }
 
-function TrainersModule({ trainers, branches, branchFilter, onBranchFilterChange, onNew, onEdit, onDelete }: { trainers: AnyRow[]; branches: AnyRow[]; branchFilter: string; onBranchFilterChange: (value: string) => void; onNew: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void }) {
+function TrainersModule({ user, trainers, branches, branchFilter, onBranchFilterChange, onNew, onEdit, onDelete }: { user: AnyRow | null; trainers: AnyRow[]; branches: AnyRow[]; branchFilter: string; onBranchFilterChange: (value: string) => void; onNew: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void }) {
+  const branchLocked = isBranchFieldLocked(user, branches);
+  const branchLabel = branchLabelForId(branchFilter, branches, String(user?.branch_name ?? ""));
+
   return (
     <Module title="Profesores" subtitle="Personal que imparte clases por sede. Puede ser un usuario nuevo o uno existente del sistema." onNew={onNew} newLabel="Nuevo profesor">
       <div className="mb-4 grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:max-w-sm">
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           <span>Sede</span>
-          <SearchableSelect value={branchFilter} onChange={onBranchFilterChange} options={branchOptions(branches)} emptyOption={{ value: "", label: "Todas las sedes" }} className={fieldClass()} />
+          {branchLocked ? (
+            <input readOnly value={branchLabel} className={fieldClass("bg-zinc-100 text-zinc-700")} />
+          ) : (
+            <SearchableSelect value={branchFilter} onChange={onBranchFilterChange} options={branchOptions(branches)} emptyOption={{ value: "", label: "Todas las sedes" }} className={fieldClass()} />
+          )}
         </label>
       </div>
       <DataTable title="Profesores activos" rows={trainers} columns={["name", "email", "phone", "specialty", "branch_name", "role_name", "classes_count", "is_active"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
     </Module>
+  );
+}
+
+function BranchField({ user, branches, value, onChange, allowAllForSuperadmin = false }: { user: AnyRow | null; branches: AnyRow[]; value: string; onChange: (branchId: string) => void; allowAllForSuperadmin?: boolean }) {
+  const locked = isBranchFieldLocked(user, branches);
+  const options = memberBranchSelectOptions(user, branches);
+  const label = branchLabelForId(value, branches, String(user?.branch_name ?? ""));
+
+  useEffect(() => {
+    if (!locked) return;
+    const branchId = defaultBranchId(user, branches);
+    if (branchId && String(value) !== branchId) onChange(branchId);
+  }, [locked, user, branches, value, onChange]);
+
+  return (
+    <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+      <RequiredLabel required={!allowAllForSuperadmin || Boolean(user?.branch_id)}>Sede</RequiredLabel>
+      {locked ? (
+        <input readOnly value={label} className={fieldClass("w-full bg-zinc-100 text-zinc-700")} />
+      ) : (
+        <SearchableSelect
+          required={!allowAllForSuperadmin || Boolean(user?.branch_id)}
+          value={String(value ?? "")}
+          onChange={onChange}
+          options={options}
+          emptyOption={allowAllForSuperadmin && user?.is_superadmin && !user?.branch_id ? { value: "", label: "Todas las sedes" } : { value: "", label: "Seleccione sede" }}
+          className={fieldClass("w-full")}
+        />
+      )}
+    </label>
   );
 }
 
@@ -2959,8 +3006,17 @@ function EquipmentModal({ open, editing, form, branches, onChange, onClose, onSu
   );
 }
 
-function TrainerModal({ open, editing, form, branches, tenantStaff, onChange, onClose, onSubmit, onLoadStaff }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; tenantStaff: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void; onLoadStaff: () => void }) {
+function TrainerModal({ open, editing, user, form, branches, tenantStaff, onChange, onClose, onSubmit, onLoadStaff }: { open: boolean; editing: boolean; user: AnyRow | null; form: AnyRow; branches: AnyRow[]; tenantStaff: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void; onLoadStaff: () => void }) {
   const isNew = form.mode === "new" && !editing;
+  const branchLocked = isBranchFieldLocked(user, branches);
+
+  useEffect(() => {
+    if (!open) return;
+    const branchId = defaultBranchId(user, branches);
+    if (branchId && String(form.branch_id ?? "") !== branchId) {
+      onChange({ ...form, branch_id: branchId });
+    }
+  }, [open, user, branches, form.branch_id]);
 
   return (
     <Modal open={open} title={editing ? "Editar profesor" : "Nuevo profesor"} subtitle="Crea un usuario con acceso o habilita a alguien que ya trabaja en el gimnasio." onClose={onClose}>
@@ -2976,12 +3032,13 @@ function TrainerModal({ open, editing, form, branches, tenantStaff, onChange, on
             <RequiredLabel>Seleccionar usuario</RequiredLabel>
             <SearchableSelect required value={String(form.existing_user_id ?? "")} onChange={(value) => {
               const selected = tenantStaff.find((item) => String(item.id) === value);
+              const branchId = branchLocked ? String(form.branch_id ?? defaultBranchId(user, branches)) : (selected?.branch_id ? String(selected.branch_id) : form.branch_id);
               onChange({
                 ...form,
                 existing_user_id: value,
                 name: selected?.name ?? form.name,
                 email: selected?.email ?? form.email,
-                branch_id: selected?.branch_id ? String(selected.branch_id) : form.branch_id,
+                branch_id: branchId,
               });
             }} options={tenantStaffOptions(tenantStaff)} emptyOption={{ value: "", label: "Seleccione usuario" }} className={fieldClass("w-full")} />
           </label>
@@ -2989,7 +3046,7 @@ function TrainerModal({ open, editing, form, branches, tenantStaff, onChange, on
         <Field label="Nombre completo" value={form.name} onChange={(value) => onChange({ ...form, name: value })} required />
         <Field label="Correo" type="email" value={form.email} onChange={(value) => onChange({ ...form, email: value })} required />
         {isNew || editing ? <Field label={editing ? "Nueva contraseña (opcional)" : "Contraseña"} type="password" value={form.password} onChange={(value) => onChange({ ...form, password: value })} required={isNew && !editing} /> : null}
-        <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Sede</RequiredLabel><SearchableSelect required value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} options={branchOptions(branches)} emptyOption={{ value: "", label: "Seleccione sede" }} className={fieldClass("w-full")} /></label>
+        <BranchField user={user} branches={branches} value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Teléfono" value={form.phone ?? ""} onChange={(value) => onChange({ ...form, phone: value })} />
           <Field label="Especialidad" value={form.specialty ?? ""} onChange={(value) => onChange({ ...form, specialty: value })} />
@@ -3003,9 +3060,23 @@ function TrainerModal({ open, editing, form, branches, tenantStaff, onChange, on
   );
 }
 
-function ClassModal({ open, editing, form, branches, trainers, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; form: AnyRow; branches: AnyRow[]; trainers: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-  const branchTrainers = trainerOptions(trainers, String(form.branch_id ?? ""));
-  const noTrainerInBranch = branchTrainers.length === 0 && String(form.branch_id ?? "") !== "";
+function ClassModal({ open, editing, user, form, branches, trainers, onChange, onClose, onSubmit }: { open: boolean; editing: boolean; user: AnyRow | null; form: AnyRow; branches: AnyRow[]; trainers: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  const branchId = String(form.branch_id ?? defaultBranchId(user, branches));
+  const branchTrainers = trainerOptions(trainers, branchId);
+  const noTrainerInBranch = branchTrainers.length === 0 && branchId !== "";
+
+  useEffect(() => {
+    if (!open) return;
+    const nextBranchId = defaultBranchId(user, branches);
+    if (nextBranchId && String(form.branch_id ?? "") !== nextBranchId) {
+      const pool = trainerOptions(trainers, nextBranchId);
+      onChange({
+        ...form,
+        branch_id: nextBranchId,
+        trainer_id: pool.some((item) => item.value === String(form.trainer_id)) ? form.trainer_id : (pool[0]?.value ?? ""),
+      });
+    }
+  }, [open, user, branches]);
 
   return (
     <Modal open={open} title={editing ? "Editar clase" : "Nueva clase"} subtitle="Programa clases recurrentes con profesor obligatorio por sede." onClose={onClose}>
@@ -3022,10 +3093,10 @@ function ClassModal({ open, editing, form, branches, trainers, onChange, onClose
           <Field label="Hora fin" type="time" value={form.ends_at} onChange={(value) => onChange({ ...form, ends_at: value })} required />
           <Field label="Cupos" type="number" value={form.capacity} onChange={(value) => onChange({ ...form, capacity: value })} required />
           <Field label="Sala / ambiente" value={form.room} onChange={(value) => onChange({ ...form, room: value })} />
-          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><RequiredLabel>Sede</RequiredLabel><SearchableSelect required value={String(form.branch_id ?? "")} onChange={(value) => {
+          <BranchField user={user} branches={branches} value={branchId} onChange={(value) => {
             const pool = trainerOptions(trainers, value);
             onChange({ ...form, branch_id: value, trainer_id: pool.some((item) => item.value === String(form.trainer_id)) ? form.trainer_id : (pool[0]?.value ?? "") });
-          }} options={branchOptions(branches)} emptyOption={{ value: "", label: "Seleccione sede" }} className={fieldClass("w-full")} /></label>
+          }} />
           <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500 sm:col-span-2"><RequiredLabel>Profesor</RequiredLabel><SearchableSelect required value={String(form.trainer_id ?? "")} onChange={(value) => onChange({ ...form, trainer_id: value })} options={branchTrainers} emptyOption={{ value: "", label: "Seleccione profesor" }} className={fieldClass("w-full")} /></label>
           <Field label="Color" type="color" value={form.color} onChange={(value) => onChange({ ...form, color: value })} required />
         </div>
