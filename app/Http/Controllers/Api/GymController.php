@@ -23,6 +23,7 @@ class GymController extends Controller
         'memberships' => 'Membresías',
         'attendance' => 'Accesos',
         'classes' => 'Clases',
+        'trainers' => 'Profesores',
         'finance' => 'Caja',
         'equipment' => 'Equipos',
         'products' => 'Productos',
@@ -112,6 +113,46 @@ class GymController extends Controller
         $user->loadMissing('role');
 
         return $user->role?->slug === 'admin';
+    }
+
+    private function canManageGymStaff(Request $request): bool
+    {
+        $user = $request->user();
+        if ($user === null) {
+            return false;
+        }
+        if ($this->isSystemAdmin($user) || $this->isTenantAdmin($user)) {
+            return true;
+        }
+        $user->loadMissing('role');
+
+        return in_array($user->role?->slug, ['admin', 'recepcion'], true);
+    }
+
+    private function assertCanManageGymStaff(Request $request): void
+    {
+        abort_unless($this->canManageGymStaff($request), 403, 'No tiene permisos para gestionar profesores.');
+    }
+
+    private function trainerRoleId(): ?int
+    {
+        return DB::table('roles')->where('slug', 'entrenador')->value('id');
+    }
+
+    private function assertValidClassTrainer(Request $request, mixed $trainerId, ?int $branchId): void
+    {
+        abort_unless(filled($trainerId), 422, 'Seleccione un profesor para la clase.');
+        $tenantId = $this->resolveTenantId($request);
+        $trainer = User::query()
+            ->where('id', (int) $trainerId)
+            ->where('tenant_id', $tenantId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($trainer !== null, 422, 'El profesor no pertenece al cliente activo.');
+        abort_unless((bool) $trainer->is_trainer, 422, 'El usuario seleccionado no está habilitado como profesor.');
+        if ($branchId !== null && $trainer->branch_id && (int) $trainer->branch_id !== (int) $branchId) {
+            abort(422, 'El profesor debe pertenecer a la misma sede de la clase.');
+        }
     }
 
     private function scopeBranches($query, Request $request, string $table, ?string $branchColumn = null): void
@@ -2188,11 +2229,256 @@ class GymController extends Controller
         }
     }
 
+    public function trainers(Request $request): JsonResponse
+    {
+        $tenantId = $this->resolveTenantId($request);
+        $query = User::query()
+            ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
+            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'users.branch_id')
+            ->where('users.tenant_id', $tenantId)
+            ->where('users.is_trainer', true)
+            ->select(
+                'users.id',
+                'users.name',
+                'users.email',
+                'users.phone',
+                'users.specialty',
+                'users.availability',
+                'users.is_active',
+                'users.is_trainer',
+                'users.branch_id',
+                'users.role_id',
+                'roles.name as role_name',
+                'roles.slug as role_slug',
+                'gym_branches.name as branch_name',
+            )
+            ->orderBy('users.name');
+
+        if ($request->filled('branch_id')) {
+            $query->where('users.branch_id', (int) $request->query('branch_id'));
+        } elseif (! $this->isSystemAdmin($request->user()) && ! $this->isTenantAdmin($request->user())) {
+            $branchIds = $this->userBranchIds($request);
+            if ($branchIds !== []) {
+                $query->whereIn('users.branch_id', $branchIds);
+            }
+        }
+
+        $trainers = $query->get()->map(function ($row) {
+            $row->classes_count = (int) DB::table('gym_classes')
+                ->where('trainer_id', $row->id)
+                ->where('is_active', true)
+                ->count();
+
+            return $row;
+        });
+
+        return response()->json($trainers);
+    }
+
+    public function tenantStaff(Request $request): JsonResponse
+    {
+        $this->assertCanManageGymStaff($request);
+        $tenantId = $this->resolveTenantId($request);
+        $query = User::query()
+            ->leftJoin('roles', 'roles.id', '=', 'users.role_id')
+            ->leftJoin('gym_branches', 'gym_branches.id', '=', 'users.branch_id')
+            ->where('users.tenant_id', $tenantId)
+            ->where('users.is_active', true)
+            ->select(
+                'users.id',
+                'users.name',
+                'users.email',
+                'users.is_trainer',
+                'users.branch_id',
+                'roles.name as role_name',
+                'gym_branches.name as branch_name',
+            )
+            ->orderBy('users.name');
+
+        if ($request->boolean('available_only')) {
+            $query->where('users.is_trainer', false);
+        }
+
+        return response()->json($query->limit(200)->get());
+    }
+
+    public function storeTrainer(Request $request): JsonResponse
+    {
+        $this->assertCanManageGymStaff($request);
+        $tenantId = $this->resolveTenantId($request);
+        $data = $request->validate([
+            'mode' => ['required', Rule::in(['new', 'existing'])],
+            'existing_user_id' => ['nullable', 'exists:users,id'],
+            'name' => ['required', 'string', 'max:120'],
+            'email' => ['nullable', 'email', 'max:120'],
+            'password' => ['nullable', 'string', 'min:8'],
+            'branch_id' => ['required', 'exists:gym_branches,id'],
+            'phone' => ['nullable', 'string', 'max:40'],
+            'specialty' => ['nullable', 'string', 'max:120'],
+            'availability' => ['nullable', 'string', 'max:120'],
+            'assign_trainer_role' => ['nullable', 'boolean'],
+            'is_active' => ['nullable', 'boolean'],
+        ]);
+
+        abort_unless(
+            DB::table('gym_branches')->where('id', $data['branch_id'])->where('tenant_id', $tenantId)->exists(),
+            422,
+            'La sede no pertenece al cliente activo.',
+        );
+
+        $branchId = (int) $data['branch_id'];
+        $trainerRoleId = $this->trainerRoleId();
+        $assignTrainerRole = (bool) ($data['assign_trainer_role'] ?? false);
+
+        if ($data['mode'] === 'existing') {
+            abort_unless(filled($data['existing_user_id'] ?? null), 422, 'Seleccione el usuario a habilitar como profesor.');
+            $user = User::query()->where('id', $data['existing_user_id'])->where('tenant_id', $tenantId)->first();
+            abort_unless($user !== null, 422, 'El usuario no pertenece al cliente activo.');
+            $email = strtolower(trim((string) ($data['email'] ?? $user->email)));
+            abort_unless(
+                ! User::query()->where('email', $email)->where('id', '!=', $user->id)->exists(),
+                422,
+                'El correo ya está registrado por otro usuario.',
+            );
+            $user->update([
+                'name' => trim((string) $data['name']),
+                'email' => $email,
+                'branch_id' => $branchId,
+                'phone' => $data['phone'] ?? $user->phone,
+                'specialty' => $data['specialty'] ?? $user->specialty,
+                'availability' => $data['availability'] ?? $user->availability,
+                'is_trainer' => true,
+                'is_active' => $data['is_active'] ?? $user->is_active,
+                'role_id' => $assignTrainerRole && $trainerRoleId ? $trainerRoleId : $user->role_id,
+            ]);
+            if (filled($data['password'] ?? null)) {
+                $user->update(['password' => Hash::make((string) $data['password'])]);
+            }
+            DB::table('gym_branch_user')->updateOrInsert(['user_id' => $user->id, 'branch_id' => $branchId]);
+
+            return response()->json($this->trainerPayload($user->fresh()), 201);
+        }
+
+        $email = strtolower(trim((string) ($data['email'] ?? '')));
+        abort_unless($email !== '', 422, 'Indique el correo del profesor.');
+        abort_unless(! User::query()->where('email', $email)->exists(), 422, 'El correo ya está registrado.');
+        abort_unless(filled($data['password'] ?? null), 422, 'Indique una contraseña de al menos 8 caracteres.');
+
+        $user = User::query()->create([
+            'name' => trim((string) $data['name']),
+            'email' => $email,
+            'password' => Hash::make((string) $data['password']),
+            'tenant_id' => $tenantId,
+            'branch_id' => $branchId,
+            'role_id' => $assignTrainerRole && $trainerRoleId ? $trainerRoleId : null,
+            'phone' => $data['phone'] ?? null,
+            'specialty' => $data['specialty'] ?? null,
+            'availability' => $data['availability'] ?? null,
+            'is_trainer' => true,
+            'is_active' => $data['is_active'] ?? true,
+            'is_superadmin' => false,
+        ]);
+        DB::table('gym_branch_user')->updateOrInsert(['user_id' => $user->id, 'branch_id' => $branchId]);
+
+        return response()->json($this->trainerPayload($user), 201);
+    }
+
+    public function updateTrainer(Request $request, int $trainer): JsonResponse
+    {
+        $this->assertCanManageGymStaff($request);
+        $tenantId = $this->resolveTenantId($request);
+        $user = User::query()->where('id', $trainer)->where('tenant_id', $tenantId)->where('is_trainer', true)->first();
+        abort_unless($user !== null, 404, 'Profesor no encontrado.');
+
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'email' => ['required', 'email', 'max:120', Rule::unique('users', 'email')->ignore($trainer)],
+            'password' => ['nullable', 'string', 'min:8'],
+            'branch_id' => ['required', 'exists:gym_branches,id'],
+            'phone' => ['nullable', 'string', 'max:40'],
+            'specialty' => ['nullable', 'string', 'max:120'],
+            'availability' => ['nullable', 'string', 'max:120'],
+            'assign_trainer_role' => ['nullable', 'boolean'],
+            'is_active' => ['required', 'boolean'],
+        ]);
+
+        abort_unless(
+            DB::table('gym_branches')->where('id', $data['branch_id'])->where('tenant_id', $tenantId)->exists(),
+            422,
+            'La sede no pertenece al cliente activo.',
+        );
+
+        $trainerRoleId = $this->trainerRoleId();
+        $assignTrainerRole = (bool) ($data['assign_trainer_role'] ?? false);
+        $update = [
+            'name' => trim((string) $data['name']),
+            'email' => strtolower(trim((string) $data['email'])),
+            'branch_id' => (int) $data['branch_id'],
+            'phone' => $data['phone'] ?? null,
+            'specialty' => $data['specialty'] ?? null,
+            'availability' => $data['availability'] ?? null,
+            'is_active' => (bool) $data['is_active'],
+            'is_trainer' => true,
+        ];
+        if ($assignTrainerRole && $trainerRoleId) {
+            $update['role_id'] = $trainerRoleId;
+        }
+        if (filled($data['password'] ?? null)) {
+            $update['password'] = Hash::make((string) $data['password']);
+        }
+        $user->update($update);
+        DB::table('gym_branch_user')->where('user_id', $trainer)->delete();
+        DB::table('gym_branch_user')->insert(['user_id' => $trainer, 'branch_id' => (int) $data['branch_id']]);
+
+        return response()->json($this->trainerPayload($user->fresh()));
+    }
+
+    public function destroyTrainer(Request $request, int $trainer): JsonResponse
+    {
+        $this->assertCanManageGymStaff($request);
+        $tenantId = $this->resolveTenantId($request);
+        $user = User::query()->where('id', $trainer)->where('tenant_id', $tenantId)->where('is_trainer', true)->first();
+        abort_unless($user !== null, 404, 'Profesor no encontrado.');
+
+        $hasActiveClasses = DB::table('gym_classes')
+            ->where('trainer_id', $trainer)
+            ->where('is_active', true)
+            ->exists();
+        abort_if($hasActiveClasses, 422, 'No se puede quitar: el profesor tiene clases activas asignadas. Reasigne las clases primero.');
+
+        $user->update(['is_trainer' => false, 'is_active' => false]);
+
+        return response()->json(['ok' => true, 'message' => 'Profesor deshabilitado correctamente.']);
+    }
+
+    private function trainerPayload(User $user): object
+    {
+        $user->loadMissing('role');
+        $branchName = DB::table('gym_branches')->where('id', $user->branch_id)->value('name');
+
+        return (object) [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'phone' => $user->phone,
+            'specialty' => $user->specialty,
+            'availability' => $user->availability,
+            'is_active' => $user->is_active,
+            'is_trainer' => $user->is_trainer,
+            'branch_id' => $user->branch_id,
+            'branch_name' => $branchName,
+            'role_id' => $user->role_id,
+            'role_name' => $user->role?->name,
+            'role_slug' => $user->role?->slug,
+        ];
+    }
+
     public function storeClass(Request $request): JsonResponse
     {
         $data = $this->validateClass($request);
         $data['tenant_id'] = $this->defaultTenantId($request);
         $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
+        $this->assertValidClassTrainer($request, $data['trainer_id'], $data['branch_id'] ? (int) $data['branch_id'] : null);
         $data['created_at'] = now();
         $data['updated_at'] = now();
 
@@ -2205,6 +2491,7 @@ class GymController extends Controller
     {
         $data = $this->validateClass($request);
         $data['branch_id'] = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
+        $this->assertValidClassTrainer($request, $data['trainer_id'], $data['branch_id'] ? (int) $data['branch_id'] : null);
         $data['updated_at'] = now();
 
         $this->scopeTenant(DB::table('gym_classes')->where('id', $class), $request, 'gym_classes')->update($data);
@@ -2383,7 +2670,7 @@ class GymController extends Controller
             'level' => ['required', 'string', 'max:40'],
             'branch_id' => ['nullable', 'exists:gym_branches,id'],
             'room' => ['nullable', 'string', 'max:120'],
-            'trainer_id' => ['nullable', 'exists:users,id'],
+            'trainer_id' => ['required', 'exists:users,id'],
             'weekday' => ['required', Rule::in(['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'])],
             'starts_at' => ['required', 'date_format:H:i'],
             'ends_at' => ['required', 'date_format:H:i', 'after:starts_at'],

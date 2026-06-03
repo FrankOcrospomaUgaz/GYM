@@ -94,6 +94,7 @@ class GymSeeder extends Seeder
                 'phone' => '999000002',
                 'is_active' => true,
                 'specialty' => 'Funcional y musculación',
+                'is_trainer' => true,
             ]
         );
 

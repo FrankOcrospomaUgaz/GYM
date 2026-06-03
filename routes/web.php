@@ -40,6 +40,11 @@ Route::middleware('auth')->group(function (): void {
         Route::post('attendance/check-in', [GymController::class, 'checkIn']);
         Route::delete('attendance/{attendance}', [GymController::class, 'destroyAttendance']);
         Route::get('classes', [GymController::class, 'classes']);
+        Route::get('trainers', [GymController::class, 'trainers']);
+        Route::get('tenant-staff', [GymController::class, 'tenantStaff']);
+        Route::post('trainers', [GymController::class, 'storeTrainer']);
+        Route::put('trainers/{trainer}', [GymController::class, 'updateTrainer']);
+        Route::delete('trainers/{trainer}', [GymController::class, 'destroyTrainer']);
         Route::get('training-subscriptions', [GymController::class, 'trainingSubscriptions']);
         Route::post('training-subscriptions', [GymController::class, 'storeTrainingSubscription']);
         Route::put('training-subscriptions/{subscription}', [GymController::class, 'updateTrainingSubscription']);

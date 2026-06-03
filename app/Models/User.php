@@ -26,6 +26,7 @@ class User extends Authenticatable
         'cargo_id',
         'phone',
         'is_active',
+        'is_trainer',
         'contract_type',
         'salary',
         'cost_per_hour',
@@ -47,6 +48,7 @@ class User extends Authenticatable
             'tenant_id' => 'integer',
             'branch_id' => 'integer',
             'is_active' => 'boolean',
+            'is_trainer' => 'boolean',
             'salary' => 'decimal:2',
             'cost_per_hour' => 'decimal:2',
         ];

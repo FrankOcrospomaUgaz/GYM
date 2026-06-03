@@ -99,6 +99,25 @@ export function stringOptions(values: string[]): SearchableSelectOption[] {
   return values.map((value) => ({ value, label: value }));
 }
 
+export function trainerOptions(trainers: AnyRow[], branchId?: string): SearchableSelectOption[] {
+  const pool = branchId
+    ? trainers.filter((trainer) => String(trainer.branch_id ?? "") === String(branchId))
+    : trainers;
+  return pool
+    .filter((trainer) => trainer.is_active !== false && trainer.is_active !== 0)
+    .map((trainer) => ({
+      value: String(trainer.id),
+      label: `${trainer.name}${trainer.specialty ? ` · ${trainer.specialty}` : ""}${trainer.branch_name ? ` (${trainer.branch_name})` : ""}`,
+    }));
+}
+
+export function tenantStaffOptions(staff: AnyRow[]): SearchableSelectOption[] {
+  return staff.map((user) => ({
+    value: String(user.id),
+    label: `${user.name} · ${user.role_name ?? "Usuario"}${user.branch_name ? ` (${user.branch_name})` : ""}`,
+  }));
+}
+
 export function branchOptions(branches: AnyRow[]): SearchableSelectOption[] {
   return branches.map((branch) => ({
     value: String(branch.id),
