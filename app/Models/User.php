@@ -17,6 +17,8 @@ class User extends Authenticatable
 
     protected $fillable = [
         'name',
+        'dni',
+        'birthdate',
         'email',
         'password',
         'is_superadmin',
@@ -43,6 +45,7 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'birthdate' => 'date',
             'password' => 'hashed',
             'is_superadmin' => 'boolean',
             'tenant_id' => 'integer',

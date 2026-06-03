@@ -2240,6 +2240,8 @@ class GymController extends Controller
             ->select(
                 'users.id',
                 'users.name',
+                'users.dni',
+                'users.birthdate',
                 'users.email',
                 'users.phone',
                 'users.specialty',
@@ -2310,6 +2312,8 @@ class GymController extends Controller
             'mode' => ['required', Rule::in(['new', 'existing'])],
             'existing_user_id' => ['nullable', 'exists:users,id'],
             'name' => ['required', 'string', 'max:120'],
+            'dni' => ['nullable', 'string', 'size:8', 'regex:/^\d{8}$/'],
+            'birthdate' => ['nullable', 'date'],
             'email' => ['nullable', 'email', 'max:120'],
             'password' => ['nullable', 'string', 'min:8'],
             'branch_id' => ['nullable', 'exists:gym_branches,id'],
@@ -2324,19 +2328,29 @@ class GymController extends Controller
         abort_unless($branchId !== null, 422, 'No se pudo determinar la sede del registro.');
         $trainerRoleId = $this->trainerRoleId();
         $assignTrainerRole = (bool) ($data['assign_trainer_role'] ?? false);
+        $dni = filled($data['dni'] ?? null) ? (string) $data['dni'] : null;
+        $birthdate = filled($data['birthdate'] ?? null) ? (string) $data['birthdate'] : null;
 
         if ($data['mode'] === 'existing') {
             abort_unless(filled($data['existing_user_id'] ?? null), 422, 'Seleccione el usuario a habilitar como profesor.');
             $user = User::query()->where('id', $data['existing_user_id'])->where('tenant_id', $tenantId)->first();
             abort_unless($user !== null, 422, 'El usuario no pertenece al cliente activo.');
-            $email = strtolower(trim((string) ($data['email'] ?? $user->email)));
-            abort_unless(
-                ! User::query()->where('email', $email)->where('id', '!=', $user->id)->exists(),
-                422,
-                'El correo ya está registrado por otro usuario.',
-            );
+            $this->assertTrainerDniAvailable($tenantId, $dni, $user->id);
+            $email = $this->normalizeTrainerEmailInput($data['email'] ?? null, $user);
+            if ($email !== null) {
+                abort_unless(
+                    ! User::query()->where('email', $email)->where('id', '!=', $user->id)->exists(),
+                    422,
+                    'El correo ya está registrado por otro usuario.',
+                );
+            }
+            if (filled($data['password'] ?? null) && $email === null) {
+                abort(422, 'Indique el correo para asignar acceso al sistema.');
+            }
             $user->update([
                 'name' => trim((string) $data['name']),
+                'dni' => $dni ?? $user->dni,
+                'birthdate' => $birthdate ?? $user->birthdate,
                 'email' => $email,
                 'branch_id' => $branchId,
                 'phone' => $data['phone'] ?? $user->phone,
@@ -2354,15 +2368,21 @@ class GymController extends Controller
             return response()->json($this->trainerPayload($user->fresh()), 201);
         }
 
-        $email = strtolower(trim((string) ($data['email'] ?? '')));
-        abort_unless($email !== '', 422, 'Indique el correo del profesor.');
-        abort_unless(! User::query()->where('email', $email)->exists(), 422, 'El correo ya está registrado.');
-        abort_unless(filled($data['password'] ?? null), 422, 'Indique una contraseña de al menos 8 caracteres.');
+        $this->assertTrainerDniAvailable($tenantId, $dni);
+        $email = $this->normalizeTrainerEmailInput($data['email'] ?? null);
+        if ($email !== null) {
+            abort_unless(! User::query()->where('email', $email)->exists(), 422, 'El correo ya está registrado.');
+        }
+        if (filled($data['password'] ?? null)) {
+            abort_unless($email !== null, 422, 'Indique el correo para asignar acceso al sistema.');
+        }
 
         $user = User::query()->create([
             'name' => trim((string) $data['name']),
+            'dni' => $dni,
+            'birthdate' => $birthdate,
             'email' => $email,
-            'password' => Hash::make((string) $data['password']),
+            'password' => filled($data['password'] ?? null) ? (string) $data['password'] : null,
             'tenant_id' => $tenantId,
             'branch_id' => $branchId,
             'role_id' => $assignTrainerRole && $trainerRoleId ? $trainerRoleId : null,
@@ -2387,7 +2407,9 @@ class GymController extends Controller
 
         $data = $request->validate([
             'name' => ['required', 'string', 'max:120'],
-            'email' => ['required', 'email', 'max:120', Rule::unique('users', 'email')->ignore($trainer)],
+            'dni' => ['nullable', 'string', 'size:8', 'regex:/^\d{8}$/'],
+            'birthdate' => ['nullable', 'date'],
+            'email' => ['nullable', 'email', 'max:120'],
             'password' => ['nullable', 'string', 'min:8'],
             'branch_id' => ['nullable', 'exists:gym_branches,id'],
             'phone' => ['nullable', 'string', 'max:40'],
@@ -2400,11 +2422,28 @@ class GymController extends Controller
         $branchId = $this->branchIdForWrite($request, $data['branch_id'] ?? null);
         abort_unless($branchId !== null, 422, 'No se pudo determinar la sede del registro.');
 
+        $dni = filled($data['dni'] ?? null) ? (string) $data['dni'] : null;
+        $birthdate = filled($data['birthdate'] ?? null) ? (string) $data['birthdate'] : null;
+        $this->assertTrainerDniAvailable($tenantId, $dni, $user->id);
+        $email = $this->normalizeTrainerEmailInput($data['email'] ?? null, $user);
+        if ($email !== null) {
+            abort_unless(
+                ! User::query()->where('email', $email)->where('id', '!=', $user->id)->exists(),
+                422,
+                'El correo ya está registrado por otro usuario.',
+            );
+        }
+        if (filled($data['password'] ?? null) && $email === null) {
+            abort(422, 'Indique el correo para asignar acceso al sistema.');
+        }
+
         $trainerRoleId = $this->trainerRoleId();
         $assignTrainerRole = (bool) ($data['assign_trainer_role'] ?? false);
         $update = [
             'name' => trim((string) $data['name']),
-            'email' => strtolower(trim((string) $data['email'])),
+            'dni' => $dni ?? $user->dni,
+            'birthdate' => $birthdate,
+            'email' => $email,
             'branch_id' => $branchId,
             'phone' => $data['phone'] ?? null,
             'specialty' => $data['specialty'] ?? null,
@@ -2443,6 +2482,31 @@ class GymController extends Controller
         return response()->json(['ok' => true, 'message' => 'Profesor deshabilitado correctamente.']);
     }
 
+    private function normalizeTrainerEmailInput(mixed $input, ?User $existing = null): ?string
+    {
+        $email = strtolower(trim((string) ($input ?? '')));
+
+        if ($email === '') {
+            return $existing?->email;
+        }
+
+        return $email;
+    }
+
+    private function assertTrainerDniAvailable(int $tenantId, ?string $dni, ?int $ignoreUserId = null): void
+    {
+        if ($dni === null || $dni === '') {
+            return;
+        }
+
+        $query = User::query()->where('tenant_id', $tenantId)->where('dni', $dni);
+        if ($ignoreUserId !== null) {
+            $query->where('id', '!=', $ignoreUserId);
+        }
+
+        abort_if($query->exists(), 422, 'Ya existe un usuario registrado con este DNI.');
+    }
+
     private function trainerPayload(User $user): object
     {
         $user->loadMissing('role');
@@ -2451,6 +2515,8 @@ class GymController extends Controller
         return (object) [
             'id' => $user->id,
             'name' => $user->name,
+            'dni' => $user->dni,
+            'birthdate' => $user->birthdate?->toDateString(),
             'email' => $user->email,
             'phone' => $user->phone,
             'specialty' => $user->specialty,
