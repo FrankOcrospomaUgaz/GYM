@@ -173,9 +173,11 @@ const emptyMembershipEdit = {
 const emptyTrainerForm = {
   mode: "new" as "new" | "existing",
   existing_user_id: "",
+  dni: "",
+  birthdate: "",
   name: "",
   email: "",
-  password: "GymPro2026!",
+  password: "",
   branch_id: "",
   phone: "",
   specialty: "",
@@ -231,6 +233,7 @@ const emptyTrainingSubscriptionForm = {
 const labels: Record<string, string> = {
   member_code: "Código",
   dni: "DNI",
+  birthdate: "Nacimiento",
   first_name: "Nombres",
   last_name: "Apellidos",
   document_number: "Documento",
@@ -380,6 +383,12 @@ const cellTranslations: Record<string, Record<string, string>> = {
 
 function formatCell(column: string, value: unknown, row?: AnyRow) {
   if (column === "proof_url") return value ? <a className="font-bold text-blue-700 underline" href={String(value)} target="_blank" rel="noreferrer">Ver foto</a> : "-";
+  if (column === "birthdate") {
+    const date = dateOnly(value);
+    if (!date) return "-";
+    const label = formatDateInput(date);
+    return isBirthdayThisMonth(value) ? <span className="font-black text-amber-700">{label} · cumple este mes</span> : label;
+  }
   if (["checked_in_at", "checked_out_at", "paid_on", "starts_on", "ends_on", "next_maintenance_on"].includes(column)) return formatDateTime(value);
   if (column === "movement_date") return formatMovementDateTime(row?.movement_at ?? value);
   if (column === "method" || column === "payment_method") {
@@ -715,6 +724,12 @@ function dateOnly(value: unknown) {
   if (!value) return null;
   const date = new Date(String(value).includes("T") ? String(value) : `${String(value)}T00:00:00`);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isBirthdayThisMonth(birthdate: unknown) {
+  const date = dateOnly(birthdate);
+  const today = new Date();
+  return Boolean(date && date.getMonth() === today.getMonth());
 }
 
 function formatDateInput(date: Date) {
@@ -1727,6 +1742,8 @@ export function GymPage() {
       ...emptyTrainerForm,
       mode: "existing",
       existing_user_id: String(trainer.id),
+      dni: trainer.dni ? String(trainer.dni) : "",
+      birthdate: trainer.birthdate ? String(trainer.birthdate).slice(0, 10) : "",
       name: trainer.name ?? "",
       email: trainer.email ?? "",
       password: "",
@@ -1740,10 +1757,43 @@ export function GymPage() {
     setTrainerModalOpen(true);
   }
 
+  async function lookupTrainerDni(dni: string) {
+    const cleanDni = String(dni || "").trim();
+    if (!/^\d{8}$/.test(cleanDni)) {
+      notify("Ingrese un DNI válido de 8 dígitos.", "warning");
+      return;
+    }
+
+    try {
+      const response = await httpClient.get("/api/reniec", { params: { dni: cleanDni } });
+      const payload = response.data;
+      const fullName = String(payload?.name ?? "").trim()
+        || [payload?.first_name, payload?.last_name].filter(Boolean).join(" ").trim()
+        || String(payload?.nombre_completo ?? "").trim();
+      setTrainerForm((current: AnyRow) => ({
+        ...current,
+        dni: cleanDni,
+        name: fullName || current.name || "",
+        birthdate: payload?.fecha_nacimiento || current.birthdate || "",
+      }));
+      notify("Datos RENIEC cargados correctamente.");
+    } catch (error) {
+      const friendly = parseApiError(error, "No se pudo consultar el DNI");
+      notify(friendly.message, "warning");
+    }
+  }
+
   async function saveTrainer(event: FormEvent) {
     event.preventDefault();
+    const cleanDni = String(trainerForm.dni ?? "").trim();
+    const cleanEmail = String(trainerForm.email ?? "").trim();
+    const cleanPassword = String(trainerForm.password ?? "").trim();
     const payload = {
       ...trainerForm,
+      dni: /^\d{8}$/.test(cleanDni) ? cleanDni : null,
+      birthdate: String(trainerForm.birthdate ?? "").trim() || null,
+      email: cleanEmail || null,
+      password: cleanPassword || null,
       branch_id: trainerForm.branch_id || defaultBranchId(user, branches),
       assign_trainer_role: Boolean(trainerForm.assign_trainer_role),
       is_active: Boolean(trainerForm.is_active),
@@ -2075,7 +2125,7 @@ export function GymPage() {
         </header>
 
         <section className="space-y-5 p-3 sm:p-4 lg:space-y-6 lg:p-8">
-          {tab === "dashboard" ? <Dashboard dashboard={dashboard} activeMembers={activeMembers.length} membershipsCount={memberships.length} members={members} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={setCredentialMember} /> : null}
+          {tab === "dashboard" ? <Dashboard dashboard={dashboard} activeMembers={activeMembers.length} membershipsCount={memberships.length} members={members} trainers={trainers} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={setCredentialMember} /> : null}
           {tab === "members" ? <Module title="Socios" subtitle="Base de clientes, datos de contacto y control operativo." onNew={openNewMember} newLabel="Nuevo socio">
             <div className="mb-4 grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-[repeat(3,minmax(0,1fr))]">
               <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500"><span>Estado</span><SearchableSelect value={memberStatusFilter} onChange={(value) => { setMembersPage(1); setMemberStatusFilter(value); }} options={memberStatusFilterOptions.slice(1)} emptyOption={memberStatusFilterOptions[0]} className={fieldClass()} /></label>
@@ -2119,7 +2169,7 @@ export function GymPage() {
       <ExpenseModal open={expenseModalOpen} form={expenseForm} onChange={setExpenseForm} onClose={() => setExpenseModalOpen(false)} onSubmit={saveExpense} />
       <EquipmentModal open={equipmentModalOpen} editing={Boolean(editingEquipmentId)} form={equipmentForm} branches={branches} onChange={setEquipmentForm} onClose={() => { setEquipmentModalOpen(false); setEditingEquipmentId(null); }} onSubmit={saveEquipment} />
       <ClassModal open={classModalOpen} editing={Boolean(editingClassId)} user={user} form={classForm} branches={branches} trainers={trainers} onChange={setClassForm} onClose={() => setClassModalOpen(false)} onSubmit={saveClass} />
-      <TrainerModal open={trainerModalOpen} editing={Boolean(editingTrainerId)} user={user} form={trainerForm} branches={branches} tenantStaff={tenantStaff} onChange={setTrainerForm} onClose={() => { setTrainerModalOpen(false); setEditingTrainerId(null); }} onSubmit={saveTrainer} onLoadStaff={() => void loadTenantStaff(true)} />
+      <TrainerModal open={trainerModalOpen} editing={Boolean(editingTrainerId)} user={user} form={trainerForm} branches={branches} tenantStaff={tenantStaff} onChange={setTrainerForm} onSearchDni={lookupTrainerDni} onClose={() => { setTrainerModalOpen(false); setEditingTrainerId(null); }} onSubmit={saveTrainer} onLoadStaff={() => void loadTenantStaff(true)} />
       <ClassDetailModal open={classDetailOpen} gymClass={selectedClass} members={members} rows={classBookings} bookingDate={classBookingDate} selectedMemberId={classBookingMemberId} onDateChange={(date) => { setClassBookingDate(date); void reloadClassBookings(date); }} onMemberChange={setClassBookingMemberId} onReserve={reserveClass} onCheckIn={checkInClassBooking} onCancel={cancelClassBooking} onClose={() => setClassDetailOpen(false)} />
       <TrainingSubscriptionModal open={trainingSubscriptionModalOpen} editing={Boolean(editingTrainingSubscriptionId)} form={trainingSubscriptionForm} members={members} onCreateMember={openTrainingMemberModal} onChange={setTrainingSubscriptionForm} onClose={() => { setEditingTrainingSubscriptionId(null); setTrainingSubscriptionModalOpen(false); }} onSubmit={saveTrainingSubscription} />
       <TrainingSubscriptionDetailModal subscription={trainingSubscriptionDetail} onClose={() => setTrainingSubscriptionDetail(null)} onEdit={(subscription) => { setTrainingSubscriptionDetail(null); openEditTrainingSubscription(subscription); }} />
@@ -2131,17 +2181,17 @@ export function GymPage() {
   );
 }
 
-function Dashboard({ dashboard, activeMembers, membershipsCount, members, memberships, payments, attendance, trainingSubscriptions, onOpenCredential }: { dashboard: AnyRow; activeMembers: number; membershipsCount: number; members: AnyRow[]; memberships: AnyRow[]; payments: AnyRow[]; attendance: AnyRow[]; trainingSubscriptions: AnyRow[]; onOpenCredential: (member: AnyRow) => void }) {
+function Dashboard({ dashboard, activeMembers, membershipsCount, members, trainers, memberships, payments, attendance, trainingSubscriptions, onOpenCredential }: { dashboard: AnyRow; activeMembers: number; membershipsCount: number; members: AnyRow[]; trainers: AnyRow[]; memberships: AnyRow[]; payments: AnyRow[]; attendance: AnyRow[]; trainingSubscriptions: AnyRow[]; onOpenCredential: (member: AnyRow) => void }) {
   return (
     <>
       <div className="grid grid-cols-2 gap-3 lg:gap-4 xl:grid-cols-4">{(dashboard.kpis ?? []).map((kpi: AnyRow) => <div key={kpi.label} className={cardClass()}><p className="text-xs font-bold text-zinc-500 sm:text-sm">{kpi.label}</p><p className="mt-2 text-2xl font-black sm:text-3xl">{kpi.value}</p><p className="mt-2 text-[11px] font-semibold text-zinc-400 sm:text-xs">{kpi.hint}</p></div>)}</div>
       <div className={cardClass()}><h2 className="text-lg font-black">Operación de hoy</h2><div className="mt-4 grid gap-3 sm:grid-cols-3"><MetricCard title="Ingresos hoy" value={dashboard.attendance_today ?? 0} yellow /><MetricCard title="Socios activos" value={activeMembers} dark /><MetricCard title="Planes vendidos" value={membershipsCount} /></div></div>
-      <PremiumCommandCenter members={members} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={onOpenCredential} />
+      <PremiumCommandCenter members={members} trainers={trainers} memberships={memberships} payments={payments} attendance={attendance} trainingSubscriptions={trainingSubscriptions} onOpenCredential={onOpenCredential} />
     </>
   );
 }
 
-function PremiumCommandCenter({ members, memberships, payments, attendance, trainingSubscriptions, onOpenCredential }: { members: AnyRow[]; memberships: AnyRow[]; payments: AnyRow[]; attendance: AnyRow[]; trainingSubscriptions: AnyRow[]; onOpenCredential: (member: AnyRow) => void }) {
+function PremiumCommandCenter({ members, trainers, memberships, payments, attendance, trainingSubscriptions, onOpenCredential }: { members: AnyRow[]; trainers: AnyRow[]; memberships: AnyRow[]; payments: AnyRow[]; attendance: AnyRow[]; trainingSubscriptions: AnyRow[]; onOpenCredential: (member: AnyRow) => void }) {
   const expiring = memberships.filter((item) => membershipEffectiveStatus(item) === "active" && (daysUntil(item.ends_on) ?? 999) >= 0 && (daysUntil(item.ends_on) ?? 999) <= 7);
   const expired = memberships.filter((item) => membershipEffectiveStatus(item) === "expired" || ((daysUntil(item.ends_on) ?? 1) < 0 && item.status === "active"));
   const inactiveMembers = members.filter((member) => {
@@ -2149,11 +2199,9 @@ function PremiumCommandCenter({ members, memberships, payments, attendance, trai
     const inactivity = last ? Math.abs(daysUntil(last.checked_in_at) ?? 0) : 99;
     return member.status === "active" && inactivity >= 7;
   });
-  const birthdayMembers = members.filter((member) => {
-    const date = dateOnly(member.birthdate);
-    const today = new Date();
-    return date && date.getMonth() === today.getMonth();
-  });
+  const birthdayMembers = members.filter((member) => isBirthdayThisMonth(member.birthdate));
+  const birthdayTrainers = trainers.filter((trainer) => isBirthdayThisMonth(trainer.birthdate));
+  const birthdayCount = birthdayMembers.length + birthdayTrainers.length;
   const yapePlin = payments.filter((payment) => ["yape", "plin"].includes(payment.method)).reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0);
   const subscriptionIncome = trainingSubscriptions.filter((item) => item.status === "active").reduce((sum, item) => sum + Number(item.monthly_fee ?? 0), 0);
   const priorityMembers = [...expiring, ...expired].slice(0, 5).map((membership) => members.find((member) => Number(member.id) === Number(membership.member_id))).filter(Boolean) as AnyRow[];
@@ -2178,7 +2226,7 @@ function PremiumCommandCenter({ members, memberships, payments, attendance, trai
           <MetricCard title="Vencen en 7 días" value={expiring.length} yellow />
           <MetricCard title="Vencidos por cobrar" value={expired.length} />
           <MetricCard title="Inactivos 7+ días" value={inactiveMembers.length} />
-          <MetricCard title="Cumpleaños del mes" value={birthdayMembers.length} />
+          <MetricCard title="Cumpleaños del mes" value={birthdayCount} />
         </div>
       </div>
       <div className="grid gap-4 xl:grid-cols-3">
@@ -2531,9 +2579,22 @@ function ClassesModule({ subscriptions, gymClasses, viewMode, onViewModeChange, 
 function TrainersModule({ user, trainers, branches, branchFilter, onBranchFilterChange, onNew, onEdit, onDelete }: { user: AnyRow | null; trainers: AnyRow[]; branches: AnyRow[]; branchFilter: string; onBranchFilterChange: (value: string) => void; onNew: () => void; onEdit: (row: AnyRow) => void; onDelete: (row: AnyRow) => void }) {
   const branchLocked = isBranchFieldLocked(user, branches);
   const branchLabel = branchLabelForId(branchFilter, branches, String(user?.branch_name ?? ""));
+  const birthdayTrainers = trainers.filter((trainer) => isBirthdayThisMonth(trainer.birthdate));
 
   return (
     <Module title="Profesores" subtitle="Personal que imparte clases por sede. Puede ser un usuario nuevo o uno existente del sistema." onNew={onNew} newLabel="Nuevo profesor">
+      {birthdayTrainers.length > 0 ? (
+        <div className="mb-4 rounded-3xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-xs font-black uppercase tracking-wide text-amber-800">Cumpleaños del mes</p>
+          <ul className="mt-2 space-y-1 text-sm font-semibold text-amber-950">
+            {birthdayTrainers.map((trainer) => {
+              const date = dateOnly(trainer.birthdate);
+              const day = date ? String(date.getDate()).padStart(2, "0") : "--";
+              return <li key={trainer.id}>{trainer.name} · {day}/{String((date?.getMonth() ?? 0) + 1).padStart(2, "0")}</li>;
+            })}
+          </ul>
+        </div>
+      ) : null}
       <div className="mb-4 grid gap-3 rounded-3xl border border-zinc-200 bg-zinc-50 p-4 sm:max-w-sm">
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           <span>Sede</span>
@@ -2544,7 +2605,7 @@ function TrainersModule({ user, trainers, branches, branchFilter, onBranchFilter
           )}
         </label>
       </div>
-      <DataTable title="Profesores activos" rows={trainers} columns={["name", "email", "phone", "specialty", "branch_name", "role_name", "classes_count", "is_active"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
+      <DataTable title="Profesores activos" rows={trainers} columns={["dni", "name", "birthdate", "email", "phone", "specialty", "branch_name", "role_name", "classes_count", "is_active"]} action={(row) => <ActionButtons onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} />} />
     </Module>
   );
 }
@@ -3006,9 +3067,9 @@ function EquipmentModal({ open, editing, form, branches, onChange, onClose, onSu
   );
 }
 
-function TrainerModal({ open, editing, user, form, branches, tenantStaff, onChange, onClose, onSubmit, onLoadStaff }: { open: boolean; editing: boolean; user: AnyRow | null; form: AnyRow; branches: AnyRow[]; tenantStaff: AnyRow[]; onChange: (form: AnyRow) => void; onClose: () => void; onSubmit: (event: FormEvent) => void; onLoadStaff: () => void }) {
-  const isNew = form.mode === "new" && !editing;
+function TrainerModal({ open, editing, user, form, branches, tenantStaff, onChange, onSearchDni, onClose, onSubmit, onLoadStaff }: { open: boolean; editing: boolean; user: AnyRow | null; form: AnyRow; branches: AnyRow[]; tenantStaff: AnyRow[]; onChange: (form: AnyRow) => void; onSearchDni: (dni: string) => Promise<void>; onClose: () => void; onSubmit: (event: FormEvent) => void; onLoadStaff: () => void }) {
   const branchLocked = isBranchFieldLocked(user, branches);
+  const showNewProfileFields = (form.mode === "new" && !editing) || editing;
 
   useEffect(() => {
     if (!open) return;
@@ -3019,7 +3080,7 @@ function TrainerModal({ open, editing, user, form, branches, tenantStaff, onChan
   }, [open, user, branches, form.branch_id]);
 
   return (
-    <Modal open={open} title={editing ? "Editar profesor" : "Nuevo profesor"} subtitle="Crea un usuario con acceso o habilita a alguien que ya trabaja en el gimnasio." onClose={onClose}>
+    <Modal open={open} title={editing ? "Editar profesor" : "Nuevo profesor"} subtitle="Puede registrar solo al profesor (sin acceso al sistema) o añadir correo y contraseña si tendrá login." onClose={onClose}>
       <form onSubmit={onSubmit} className="space-y-3">
         {!editing ? (
           <div className="grid gap-2 sm:grid-cols-2">
@@ -3043,9 +3104,29 @@ function TrainerModal({ open, editing, user, form, branches, tenantStaff, onChan
             }} options={tenantStaffOptions(tenantStaff)} emptyOption={{ value: "", label: "Seleccione usuario" }} className={fieldClass("w-full")} />
           </label>
         ) : null}
+        {showNewProfileFields ? (
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+            <span>DNI</span>
+            <div className="flex gap-2">
+              <input maxLength={8} value={form.dni ?? ""} onChange={(event) => onChange({ ...form, dni: event.target.value.replace(/\D/g, "").slice(0, 8) })} className={fieldClass("min-w-0 flex-1")} />
+              <button type="button" onClick={() => void onSearchDni(form.dni)} className="rounded-2xl bg-zinc-950 px-4 py-2 text-xs font-black text-white">Buscar</button>
+            </div>
+          </label>
+        ) : null}
         <Field label="Nombre completo" value={form.name} onChange={(value) => onChange({ ...form, name: value })} required />
-        <Field label="Correo" type="email" value={form.email} onChange={(value) => onChange({ ...form, email: value })} required />
-        {isNew || editing ? <Field label={editing ? "Nueva contraseña (opcional)" : "Contraseña"} type="password" value={form.password} onChange={(value) => onChange({ ...form, password: value })} required={isNew && !editing} /> : null}
+        {showNewProfileFields ? (
+          <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+            <span>Fecha de nacimiento</span>
+            <input type="date" value={form.birthdate ?? ""} onChange={(event) => onChange({ ...form, birthdate: event.target.value })} className={fieldClass("w-full")} />
+          </label>
+        ) : null}
+        {showNewProfileFields ? (
+          <>
+            <Field label="Correo (opcional)" type="email" value={form.email} onChange={(value) => onChange({ ...form, email: value })} />
+            <Field label={editing ? "Nueva contraseña (opcional)" : "Contraseña (opcional)"} type="password" value={form.password} onChange={(value) => onChange({ ...form, password: value })} />
+            <p className="rounded-2xl bg-zinc-50 px-4 py-3 text-xs font-semibold text-zinc-600">Sin correo ni contraseña solo quedará como profesor para asignar clases. Si define contraseña, también debe indicar correo.</p>
+          </>
+        ) : null}
         <BranchField user={user} branches={branches} value={String(form.branch_id ?? "")} onChange={(value) => onChange({ ...form, branch_id: value })} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Teléfono" value={form.phone ?? ""} onChange={(value) => onChange({ ...form, phone: value })} />
