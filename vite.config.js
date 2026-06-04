@@ -1,12 +1,13 @@
+import { defineConfig } from "vite";
+import laravel from "laravel-vite-plugin";
+import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { createRequire } from 'module';
-
-const require = createRequire(import.meta.url);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
 export default defineConfig({
     plugins: [
       laravel({
@@ -26,4 +27,4 @@ export default defineConfig({
         ignored: ["**/storage/framework/views/**"],
       },
     },
-  }); 
+  });
