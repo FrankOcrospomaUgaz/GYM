@@ -421,12 +421,12 @@ function formatCell(column: string, value: unknown, row?: AnyRow) {
     return Object.entries(value as Record<string, { start?: string; end?: string }>).map(([day, range]) => `${day}: ${range.start ?? "--:--"}-${range.end ?? "--:--"}`).join(", ");
   }
   if (column === "schedule_mode") {
-    if (row?.schedule_mode === "package") return "Paquete de clases";
-    return row?.schedule_mode === "monthly" ? "Por semana del mes" : "Semanal fija";
+    if (row?.schedule_mode === "package") return "Control por clases";
+    return row?.schedule_mode === "monthly" ? "Por días del mes (semana a semana)" : "Por días del mes (semanal)";
   }
   if (column === "billing_mode") {
-    if (row?.schedule_mode !== "package") return "Mensual";
-    return row?.billing_mode === "per_class" ? "Por clase" : "Monto total";
+    if (row?.schedule_mode !== "package") return "Mensualidad";
+    return row?.billing_mode === "per_class" ? "Precio por clase" : "Monto total";
   }
   if (typeof value === "boolean") return value ? "Sí" : "No";
   if (["includes_classes", "includes_trainer", "is_active"].includes(column) && (value === 0 || value === 1)) return Boolean(value) ? "Sí" : "No";
@@ -3524,7 +3524,8 @@ function TrainingSubscriptionDetailModal({ subscription, onClose, onEdit }: { su
           <DetailItem label="Socio" value={subscription.member_name} />
           <DetailItem label="DNI" value={subscription.dni} />
           <DetailItem label="Disciplina" value={subscription.discipline} />
-          <DetailItem label="Configuración" value={isPackage ? "Paquete de clases" : isMonthly ? "Mensual por semana" : "Semanal fija"} />
+          <DetailItem label="Control de cobro" value={isPackage ? "Por clases" : "Por días del mes"} />
+          <DetailItem label="Detalle" value={isPackage ? "Paquete de clases" : isMonthly ? "Días distintos por semana del mes" : "Mismos días todas las semanas"} />
           {isPackage ? <DetailItem label="Cobro" value={subscription.billing_mode === "per_class" ? `S/ ${subscription.price_per_class ?? 0} por clase` : "Monto total"} /> : null}
           <DetailItem label="Vigencia" value={`${formatDateTime(subscription.starts_on)} - ${formatDateTime(subscription.ends_on)}`} />
           <DetailItem label="Días" value={Array.isArray(subscription.selected_days) ? subscription.selected_days.join(", ") : "-"} />
@@ -3563,7 +3564,7 @@ function TrainingSubscriptionDetailModal({ subscription, onClose, onEdit }: { su
               <a href={subscription.proof_url} target="_blank" rel="noreferrer" className="inline-flex rounded-2xl bg-[#ffcc00] px-4 py-2 text-sm font-black text-zinc-950">Abrir comprobante</a>
               <img src={subscription.proof_url} alt="Comprobante de pago" className="max-h-80 rounded-2xl border border-zinc-200 object-contain" />
             </div>
-          ) : <p className="mt-2 text-sm font-semibold text-zinc-500">Sin foto de comprobante. En efectivo no se solicita captura.</p>}
+          ) : <p className="mt-2 text-sm font-semibold text-zinc-500">Sin foto de comprobante registrada.</p>}
         </div>
         {subscription.notes ? <div className="rounded-3xl bg-zinc-50 p-4 text-sm font-semibold text-zinc-600"><b>Notas:</b> {subscription.notes}</div> : null}
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -3666,6 +3667,18 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
       week_schedules: nextWeeks,
       sessions_per_week: String(maxSessionsPerWeek(nextWeeks)),
     });
+  }
+
+  const controlType = scheduleMode === "package" ? "by_classes" : "by_month";
+
+  function setControlType(type: "by_month" | "by_classes") {
+    if (type === "by_classes") {
+      setScheduleMode("package");
+      return;
+    }
+    if (scheduleMode === "package") {
+      setScheduleMode("weekly");
+    }
   }
 
   function setScheduleMode(mode: TrainingScheduleMode) {
@@ -3774,7 +3787,7 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
   }
 
   return (
-    <Modal open={open} title={editing ? "Editar mensualidad" : "Mensualidad de clases"} subtitle={scheduleMode === "package" ? "Registra 1 o más clases con días, horarios y precio a tu medida." : "El socio paga mensual y define qué días y a qué hora entrena."} onClose={onClose}>
+    <Modal open={open} title={editing ? "Editar mensualidad" : "Mensualidad de clases"} subtitle={controlType === "by_classes" ? "Control por clases: defines cuántas clases compra y el precio." : "Control por días del mes: el socio paga una mensualidad según los días y horarios que entrena."} onClose={onClose}>
       <form onSubmit={onSubmit} className="space-y-3">
         <div className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
           <div className="flex items-center justify-between gap-2">
@@ -3822,22 +3835,33 @@ function TrainingSubscriptionModal({ open, editing, form, members, onCreateMembe
           )}
         </div>
         <div>
-          <p className="mb-2 text-xs font-black uppercase tracking-wide text-zinc-500">Tipo de configuración <span className="text-red-600">*</span></p>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <button type="button" onClick={() => setScheduleMode("weekly")} className={`rounded-2xl border px-4 py-3 text-left ${scheduleMode === "weekly" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
-              <p className="text-sm font-black">Semanal fija</p>
-              <p className="mt-1 text-xs font-semibold opacity-80">Los mismos días y horarios todas las semanas del mes.</p>
+          <p className="mb-2 text-xs font-black uppercase tracking-wide text-zinc-500">¿Cómo controlas el cobro? <span className="text-red-600">*</span></p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button type="button" onClick={() => setControlType("by_month")} className={`rounded-2xl border px-4 py-3 text-left ${controlType === "by_month" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
+              <p className="text-sm font-black">Por días del mes</p>
+              <p className="mt-1 text-xs font-semibold opacity-80">Mensualidad según los días y horarios que entrena en el mes.</p>
             </button>
-            <button type="button" onClick={() => setScheduleMode("monthly")} className={`rounded-2xl border px-4 py-3 text-left ${scheduleMode === "monthly" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
-              <p className="text-sm font-black">Mensual por semana</p>
-              <p className="mt-1 text-xs font-semibold opacity-80">Días y horarios distintos por semana ({weekCount} semanas).</p>
-            </button>
-            <button type="button" onClick={() => setScheduleMode("package")} className={`rounded-2xl border px-4 py-3 text-left ${scheduleMode === "package" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
-              <p className="text-sm font-black">Paquete de clases</p>
-              <p className="mt-1 text-xs font-semibold opacity-80">1, 2 o más clases con días libres y precio por clase o total.</p>
+            <button type="button" onClick={() => setControlType("by_classes")} className={`rounded-2xl border px-4 py-3 text-left ${controlType === "by_classes" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
+              <p className="text-sm font-black">Por clases</p>
+              <p className="mt-1 text-xs font-semibold opacity-80">Cobras por cantidad de clases (precio por clase o monto del paquete).</p>
             </button>
           </div>
         </div>
+        {controlType === "by_month" ? (
+          <div>
+            <p className="mb-2 text-xs font-black uppercase tracking-wide text-zinc-500">Detalle mensual <span className="text-red-600">*</span></p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button type="button" onClick={() => setScheduleMode("weekly")} className={`rounded-2xl border px-4 py-3 text-left ${scheduleMode === "weekly" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
+                <p className="text-sm font-black">Mismos días toda la mensualidad</p>
+                <p className="mt-1 text-xs font-semibold opacity-80">Los mismos días y horarios todas las semanas.</p>
+              </button>
+              <button type="button" onClick={() => setScheduleMode("monthly")} className={`rounded-2xl border px-4 py-3 text-left ${scheduleMode === "monthly" ? "border-[#ffcc00] bg-[#ffcc00] text-zinc-950" : "border-zinc-200 bg-white text-zinc-600"}`}>
+                <p className="text-sm font-black">Días distintos por semana</p>
+                <p className="mt-1 text-xs font-semibold opacity-80">Horarios que cambian semana a semana ({weekCount} semanas).</p>
+              </button>
+            </div>
+          </div>
+        ) : null}
         {scheduleMode === "package" ? (
           <div>
             <p className="mb-2 text-xs font-black uppercase tracking-wide text-zinc-500">Forma de cobro <span className="text-red-600">*</span></p>
@@ -3994,7 +4018,7 @@ function PaymentFields({ method, file, existingProofUrl, onMethodChange, onFileC
       </label>
       {method !== "cash" ? (
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
-          Foto del comprobante
+          Foto del comprobante (opcional)
           <input type="file" accept="image/*" onChange={(event) => onFileChange(event.target.files?.[0] ?? null)} className={fieldClass("w-full file:mr-3 file:rounded-xl file:border-0 file:bg-zinc-950 file:px-3 file:py-2 file:text-xs file:font-black file:text-white")} />
           {file ? <span className="text-xs font-semibold normal-case tracking-normal text-zinc-500">{file.name}</span> : null}
           {!file && existingProofUrl ? <a href={existingProofUrl} target="_blank" rel="noreferrer" className="inline-flex w-fit rounded-xl bg-blue-50 px-3 py-2 text-xs font-black normal-case tracking-normal text-blue-700">Ver comprobante actual</a> : null}

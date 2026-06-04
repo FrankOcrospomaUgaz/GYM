@@ -310,9 +310,6 @@ class GymController extends Controller
             abort_unless(Carbon::parse($data['due_on'])->greaterThanOrEqualTo($starts), 422, 'La fecha de vencimiento del crédito no puede ser anterior al inicio.');
         }
 
-        if ($paymentStatus === 'paid' && $this->paymentMethodsRequireProof($this->parsePaymentMethodsInput($request))) {
-            abort_unless($request->hasFile('proof_photo'), 422, 'Adjunte el comprobante de pago para medios distintos a efectivo.');
-        }
     }
 
     private function parsePaymentMethodsInput(Request $request, ?float $expectedTotal = null, string $legacyMethodField = 'method'): array
@@ -370,6 +367,15 @@ class GymController extends Controller
         }
 
         return false;
+    }
+
+    private function storePaymentProofUpload(Request $request, string $folder = 'payment-proofs'): ?string
+    {
+        if (! $request->hasFile('proof_photo')) {
+            return null;
+        }
+
+        return $request->file('proof_photo')?->store($folder, 'public');
     }
 
     private function encodePaymentMethodsColumn(array $methods): ?string
@@ -906,9 +912,7 @@ class GymController extends Controller
 
         $paymentStatus = (string) $data['status'];
         $paymentMethods = $this->parsePaymentMethodsInput($request, $amount);
-        $proofPath = $paymentStatus === 'paid' && $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
-            ? $request->file('proof_photo')?->store('payment-proofs', 'public')
-            : null;
+        $proofPath = $paymentStatus === 'paid' ? $this->storePaymentProofUpload($request) : null;
         $branchId = $this->branchIdForWrite($request, $this->memberBranchId((int) $data['member_id']));
         $amountPaid = in_array($paymentStatus, ['paid', 'courtesy'], true) ? $amount : 0;
 
@@ -1178,9 +1182,7 @@ class GymController extends Controller
             $paymentStatus = (string) $data['status'];
             $amount = (float) $data['amount'];
             $paymentMethods = $this->parsePaymentMethodsInput($request, $amount);
-            $proofPath = $paymentStatus === 'paid' && $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
-                ? $request->file('proof_photo')?->store('payment-proofs', 'public')
-                : null;
+            $proofPath = $paymentStatus === 'paid' ? $this->storePaymentProofUpload($request) : null;
 
             $tenantId = $this->defaultTenantId($request);
             $memberBranchId = $data['member_id'] ? $this->memberBranchId((int) $data['member_id']) : null;
@@ -1275,9 +1277,7 @@ class GymController extends Controller
 
         $collectionAmount = round((float) $data['amount'], 2);
         $paymentMethods = $this->parsePaymentMethodsInput($request, $collectionAmount);
-        $proofPath = $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
-            ? $request->file('proof_photo')?->store('payment-proofs', 'public')
-            : null;
+        $proofPath = $this->storePaymentProofUpload($request);
 
         $newAmountPaid = round((float) ($paymentRow->amount_paid ?? 0) + $collectionAmount, 2);
         $newStatus = $newAmountPaid >= (float) $paymentRow->amount ? 'paid' : 'partial';
@@ -1546,9 +1546,7 @@ class GymController extends Controller
         $newStock = round((float) $product->stock - $quantity, 3);
         $paymentStatus = (string) $data['payment_status'];
         $amountPaid = in_array($paymentStatus, ['paid', 'courtesy'], true) ? $totalAmount : 0;
-        $proofPath = $paymentStatus === 'paid' && $data['payment_method'] !== 'cash' && $request->hasFile('proof_photo')
-            ? $request->file('proof_photo')?->store('payment-proofs', 'public')
-            : null;
+        $proofPath = $paymentStatus === 'paid' ? $this->storePaymentProofUpload($request) : null;
         $branchId = $product->branch_id ? (int) $product->branch_id : $this->branchIdForWrite($request, $data['member_id'] ? $this->memberBranchId((int) $data['member_id']) : null);
 
         return DB::transaction(function () use ($request, $data, $tenantId, $product, $quantity, $newStock, $totalAmount, $saleDate, $paymentStatus, $amountPaid, $proofPath, $branchId): JsonResponse {
@@ -2098,12 +2096,7 @@ class GymController extends Controller
 
         $paymentMethods = $this->parsePaymentMethodsInput($request, $amount, 'payment_method');
         $data['payment_method'] = $this->primaryPaymentMethodFromSplits($paymentMethods);
-        $proofPath = $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
-            ? $request->file('proof_photo')?->store('training-subscription-proofs', 'public')
-            : ($this->paymentMethodsRequireProof($paymentMethods) ? $existingProofPath : null);
-        if ($this->paymentMethodsRequireProof($paymentMethods) && ! $request->hasFile('proof_photo') && ! $existingProofPath) {
-            abort(422, 'Adjunte el comprobante de pago para medios distintos a efectivo.');
-        }
+        $proofPath = $this->storePaymentProofUpload($request, 'training-subscription-proofs') ?? $existingProofPath;
 
         return [$paymentStatus, $paymentMethods, $proofPath, $amount];
     }
@@ -2758,9 +2751,7 @@ class GymController extends Controller
             }
             $amount = (float) $data['amount'];
             $paymentMethods = $this->parsePaymentMethodsInput($request, $amount, 'payment_method');
-            $data['proof_path'] = $this->paymentMethodsRequireProof($paymentMethods) && $request->hasFile('proof_photo')
-                ? $request->file('proof_photo')?->store('expense-proofs', 'public')
-                : null;
+            $data['proof_path'] = $this->storePaymentProofUpload($request, 'expense-proofs');
             $data['registered_by'] = $request->user()?->id;
             $data['created_at'] = now();
             $data['updated_at'] = now();

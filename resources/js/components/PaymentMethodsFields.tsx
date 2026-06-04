@@ -18,7 +18,7 @@ type Props = {
 };
 
 export function PaymentMethodsFields({ lines, totalAmount, file, existingProofUrl, onChange, onFileChange }: Props) {
-  const requiresProof = lines.some((line) => line.method !== "cash" && Number(line.amount) > 0);
+  const showProofUpload = lines.some((line) => line.method !== "cash" && Number(line.amount) > 0);
   const assigned = lines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
   const target = Number(totalAmount ?? 0);
   const remaining = Math.round((target - assigned) * 100) / 100;
@@ -71,9 +71,9 @@ export function PaymentMethodsFields({ lines, totalAmount, file, existingProofUr
           </div>
         ))}
       </div>
-      {requiresProof ? (
+      {showProofUpload ? (
         <label className="grid gap-1 text-xs font-black uppercase tracking-wide text-zinc-500">
-          Foto del comprobante
+          Foto del comprobante (opcional)
           <input type="file" accept="image/*" onChange={(event) => onFileChange(event.target.files?.[0] ?? null)} className={fieldClass("w-full file:mr-3 file:rounded-xl file:border-0 file:bg-zinc-950 file:px-3 file:py-2 file:text-xs file:font-black file:text-white")} />
           {file ? <span className="text-xs font-semibold normal-case tracking-normal text-zinc-500">{file.name}</span> : null}
           {!file && existingProofUrl ? <a href={existingProofUrl} target="_blank" rel="noreferrer" className="inline-flex w-fit rounded-xl bg-blue-50 px-3 py-2 text-xs font-black normal-case tracking-normal text-blue-700">Ver comprobante actual</a> : null}
