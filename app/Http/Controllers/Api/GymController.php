@@ -1801,11 +1801,13 @@ class GymController extends Controller
         $query = $this->scopeTenant(DB::table('gym_training_subscriptions'), $request, 'gym_training_subscriptions')
             ->join('gym_members', 'gym_members.id', '=', 'gym_training_subscriptions.member_id')
             ->leftJoin('gym_payments', 'gym_payments.training_subscription_id', '=', 'gym_training_subscriptions.id')
-            ->where('gym_members.status', 'active')
             ->select($select)
             ->orderByDesc('gym_training_subscriptions.id');
 
         $this->scopeBranches($query, $request, 'gym_training_subscriptions', 'gym_members.branch_id');
+        if (! $request->boolean('include_inactive_members')) {
+            $query->where('gym_members.status', 'active');
+        }
 
         return response()->json($query->limit(100)->get()
             ->map(function ($subscription) {
