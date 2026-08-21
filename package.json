@@ -2,8 +2,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && vite build",
-    "dev": "vite",
+    "build": "node init && tsc --noEmit && vite build",
+    "dev": "node init && vite",
     "lint": "eslint resources/js"
   },
   "dependencies": {
