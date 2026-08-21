@@ -683,7 +683,14 @@ class GymController extends Controller
 
     public function plans(Request $request): JsonResponse
     {
-        return response()->json($this->scopeTenant(DB::table('gym_plans'), $request, 'gym_plans')->orderBy('price')->get());
+        $query = $this->scopeTenant(DB::table('gym_plans'), $request, 'gym_plans')
+            ->orderBy('price');
+
+        if (! $request->boolean('include_inactive')) {
+            $query->where('is_active', true);
+        }
+
+        return response()->json($query->get());
     }
 
     public function fitnessGoals(Request $request): JsonResponse
@@ -1336,6 +1343,10 @@ class GymController extends Controller
             ->orderBy('gym_products.name');
         $this->scopeBranches($query, $request, 'gym_products');
 
+        if (! $request->boolean('include_inactive')) {
+            $query->where('gym_products.is_active', true);
+        }
+
         if ($request->filled('search')) {
             $search = trim((string) $request->query('search'));
             $query->where(function ($q) use ($search): void {
@@ -1769,6 +1780,9 @@ class GymController extends Controller
             ->orderBy('weekday')
             ->orderBy('starts_at');
         $this->scopeBranches($query, $request, 'gym_classes');
+        if (! $request->boolean('include_inactive')) {
+            $query->where('gym_classes.is_active', true);
+        }
 
         return response()->json($query->get());
     }
@@ -2258,6 +2272,10 @@ class GymController extends Controller
                 'gym_branches.name as branch_name',
             )
             ->orderBy('users.name');
+
+        if (! $request->boolean('include_inactive')) {
+            $query->where('users.is_active', true);
+        }
 
         if ($request->filled('branch_id')) {
             $query->where('users.branch_id', (int) $request->query('branch_id'));
