@@ -561,6 +561,8 @@ class GymController extends Controller
 
         if ($request->filled('status')) {
             $query->where('gym_members.status', (string) $request->query('status'));
+        } else {
+            $query->where('gym_members.status', 'active');
         }
 
         if ($request->filled('branch_id')) {
@@ -901,6 +903,7 @@ class GymController extends Controller
         abort_unless($plan !== null, 422, 'El plan no pertenece al cliente activo.');
         abort_unless((bool) ($plan->is_active ?? true), 422, 'El plan no está activo para ventas.');
         $member = DB::table('gym_members')->where('id', $data['member_id'])->first();
+        abort_unless($member === null || (string) $member->status === 'active', 422, 'El socio no esta activo. Activelo antes de registrar la membresia.');
         abort_unless($member !== null, 422, 'El socio no existe.');
         abort_if((string) $member->status === 'blocked', 422, 'El socio está bloqueado. Desbloquéelo antes de registrar la membresía.');
         $starts = Carbon::parse($data['starts_on']);
@@ -918,14 +921,7 @@ class GymController extends Controller
 
         $this->refreshExpiredMemberships($tenantId, (int) $data['member_id']);
 
-        return DB::transaction(function () use ($request, $data, $plan, $tenantId, $starts, $endsOn, $discount, $amount, $proofPath, $paymentStatus, $branchId, $amountPaid, $paymentMethods, $member): JsonResponse {
-            if ((string) $member->status === 'inactive') {
-                DB::table('gym_members')->where('id', $data['member_id'])->update([
-                    'status' => 'active',
-                    'updated_at' => now(),
-                ]);
-            }
-
+        return DB::transaction(function () use ($request, $data, $plan, $tenantId, $starts, $endsOn, $discount, $amount, $proofPath, $paymentStatus, $branchId, $amountPaid, $paymentMethods): JsonResponse {
             $this->resolveMembershipConflictsOnSale((int) $data['member_id'], $starts->toDateString(), $endsOn);
             $membershipId = DB::table('gym_memberships')->insertGetId([
                 'tenant_id' => $tenantId,
@@ -984,6 +980,10 @@ class GymController extends Controller
             ->orderByDesc('gym_memberships.id');
 
         $this->scopeBranches($query, $request, 'gym_memberships', 'gym_members.branch_id');
+
+        if (! $request->boolean('include_inactive_members')) {
+            $query->where('gym_members.status', 'active');
+        }
 
         if ($request->filled('status')) {
             $query->where('gym_memberships.status', (string) $request->query('status'));
@@ -1702,10 +1702,17 @@ class GymController extends Controller
 
         $this->assertMemberAccessible($request, (int) $data['member_id']);
         $tenantId = $this->defaultTenantId($request);
+        abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $tenantId)->where('status', 'active')->exists(), 422, 'El socio no esta activo.');
         $this->refreshExpiredMemberships($tenantId, (int) $data['member_id']);
 
         $membership = DB::table('gym_memberships')
             ->where('member_id', $data['member_id'])
+            ->whereExists(function ($member) {
+                $member->select(DB::raw(1))
+                    ->from('gym_members')
+                    ->whereColumn('gym_members.id', 'gym_memberships.member_id')
+                    ->where('gym_members.status', 'active');
+            })
             ->where('status', 'active')
             ->whereDate('starts_on', '<=', now()->toDateString())
             ->whereDate('ends_on', '>=', now()->toDateString())
@@ -1794,6 +1801,7 @@ class GymController extends Controller
         $query = $this->scopeTenant(DB::table('gym_training_subscriptions'), $request, 'gym_training_subscriptions')
             ->join('gym_members', 'gym_members.id', '=', 'gym_training_subscriptions.member_id')
             ->leftJoin('gym_payments', 'gym_payments.training_subscription_id', '=', 'gym_training_subscriptions.id')
+            ->where('gym_members.status', 'active')
             ->select($select)
             ->orderByDesc('gym_training_subscriptions.id');
 
@@ -1825,7 +1833,7 @@ class GymController extends Controller
     public function storeTrainingSubscription(Request $request): JsonResponse
     {
         [$data, $starts, $selectedDays, $daySchedules, $preferredTime] = $this->validatedTrainingSubscription($request);
-        abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
+        abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->where('status', 'active')->exists(), 422, 'El socio no pertenece al cliente activo o no esta activo.');
         $tenantId = $this->defaultTenantId($request);
         [$scheduleMode, $weekSchedules] = $this->trainingScheduleMetaFromValidation($request);
         $this->abortIfDuplicateTrainingSubscription($tenantId, (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules, null, $scheduleMode, $weekSchedules);
@@ -1854,7 +1862,7 @@ class GymController extends Controller
     public function updateTrainingSubscription(Request $request, int $subscription): JsonResponse
     {
         [$data, $starts, $selectedDays, $daySchedules, $preferredTime] = $this->validatedTrainingSubscription($request);
-        abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
+        abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->where('status', 'active')->exists(), 422, 'El socio no pertenece al cliente activo o no esta activo.');
         [$scheduleMode, $weekSchedules] = $this->trainingScheduleMetaFromValidation($request);
         $this->abortIfDuplicateTrainingSubscription($this->defaultTenantId($request), (int) $data['member_id'], (string) $data['discipline'], $starts->toDateString(), $selectedDays, $daySchedules, $subscription, $scheduleMode, $weekSchedules);
 
@@ -2597,7 +2605,7 @@ class GymController extends Controller
         if (! $this->isSystemAdmin($request->user()) && ! in_array((int) $gymClass->branch_id, $this->userBranchIds($request), true)) {
             abort(403, 'No tienes acceso a esta clase.');
         }
-        abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->exists(), 422, 'El socio no pertenece al cliente activo.');
+        abort_unless(DB::table('gym_members')->where('id', $data['member_id'])->where('tenant_id', $this->defaultTenantId($request))->where('status', 'active')->exists(), 422, 'El socio no pertenece al cliente activo o no esta activo.');
 
         $reserved = DB::table('gym_class_bookings')
             ->where('class_id', $class)
@@ -3130,4 +3138,3 @@ class GymController extends Controller
         };
     }
 }
-

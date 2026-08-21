@@ -12,7 +12,7 @@ export const membershipStatusFilterOptions: SearchableSelectOption[] = [
 ];
 
 export const memberStatusFilterOptions: SearchableSelectOption[] = [
-  { value: "", label: "Todos" },
+  { value: "", label: "Activos" },
   { value: "active", label: "Activo" },
   { value: "inactive", label: "Inactivo" },
   { value: "blocked", label: "Bloqueado" },
@@ -168,7 +168,7 @@ export function tenantOptions(tenants: AnyRow[]): SearchableSelectOption[] {
 }
 
 export function memberOptions(members: AnyRow[], short = false): SearchableSelectOption[] {
-  return members.map((member) => ({
+  return members.filter((member) => member.status === "active").map((member) => ({
     value: String(member.id),
     label: short
       ? `${member.first_name ?? ""} ${member.last_name ?? ""}`.trim()
